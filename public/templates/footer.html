@@ -1,0 +1,23 @@
+<style>
+  .global-footer{
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 24px 28px;
+    text-align: center;
+    color: var(--muted2, #6b7280);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  @media (max-width: 640px){ .global-footer{ padding: 0 16px 20px; font-size: 11px; } }
+</style>
+<footer class="global-footer">© <span id="footer-year"></span> Freemail · Quiet inbox workspace</footer>
+<script>
+  (function(){
+    try {
+      var y = document.getElementById('footer-year');
+      if (y) y.textContent = new Date().getFullYear();
+    } catch(_){ }
+  })();
+</script>
