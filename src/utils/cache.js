@@ -12,9 +12,16 @@ const CACHE_EXPIRY = {
 
 // 缓存存储
 const caches = {
-  mailboxId: new Map(),    // 邮箱地址 -> { id, expiry }
+  mailboxId: new Map(),    // 邮箱地址 -> { id, forwardTo, expiry }
   userQuota: new Map(),    // 用户ID -> { used, limit, expiry }
   systemStat: new Map(),   // 统计键 -> { value, expiry }
+};
+
+// 进行中的查询，避免并发场景下重复打到 D1
+const pendingRequests = {
+  mailboxRecord: new Map(),
+  userQuota: new Map(),
+  systemStat: new Map(),
 };
 
 /**
@@ -34,36 +41,78 @@ export function clearExpiredCache() {
 // ==================== 邮箱ID缓存 ====================
 
 /**
+ * 更新邮箱记录缓存
+ * @param {string} address - 邮箱地址
+ * @param {object} record - 邮箱记录
+ */
+export function updateMailboxRecordCache(address, record) {
+  const normalized = String(address || '').trim().toLowerCase();
+  if (!normalized || !record?.id) return;
+
+  caches.mailboxId.set(normalized, {
+    id: record.id,
+    forwardTo: record.forwardTo || null,
+    expiry: Date.now() + CACHE_EXPIRY.MAILBOX_ID
+  });
+}
+
+/**
+ * 从缓存获取邮箱记录，如果缓存不存在或过期则查询数据库
+ * @param {object} db - 数据库连接对象
+ * @param {string} address - 邮箱地址
+ * @returns {Promise<object|null>} 邮箱记录
+ */
+export async function getCachedMailboxRecord(db, address) {
+  const normalized = String(address || '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  const now = Date.now();
+  const cached = caches.mailboxId.get(normalized);
+
+  if (cached && cached.expiry > now) {
+    return { id: cached.id, forwardTo: cached.forwardTo || null };
+  }
+
+  const pending = pendingRequests.mailboxRecord.get(normalized);
+  if (pending) {
+    return pending;
+  }
+
+  const requestPromise = (async () => {
+    const row = await db.prepare('SELECT id, forward_to FROM mailboxes WHERE address = ? LIMIT 1')
+      .bind(normalized)
+      .first();
+
+    if (!row?.id) {
+      return null;
+    }
+
+    const record = {
+      id: row.id,
+      forwardTo: row.forward_to || null
+    };
+
+    updateMailboxRecordCache(normalized, record);
+    return record;
+  })();
+
+  pendingRequests.mailboxRecord.set(normalized, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    pendingRequests.mailboxRecord.delete(normalized);
+  }
+}
+
+/**
  * 从缓存获取邮箱ID，如果缓存不存在或过期则查询数据库
  * @param {object} db - 数据库连接对象
  * @param {string} address - 邮箱地址
  * @returns {Promise<number|null>} 邮箱ID，如果不存在返回null
  */
 export async function getCachedMailboxId(db, address) {
-  const normalized = String(address || '').trim().toLowerCase();
-  if (!normalized) return null;
-  
-  const now = Date.now();
-  const cached = caches.mailboxId.get(normalized);
-  
-  if (cached && cached.expiry > now) {
-    return cached.id;
-  }
-  
-  // 缓存不存在或过期，查询数据库
-  const res = await db.prepare('SELECT id FROM mailboxes WHERE address = ? LIMIT 1')
-    .bind(normalized).all();
-  
-  if (res.results && res.results.length > 0) {
-    const id = res.results[0].id;
-    caches.mailboxId.set(normalized, {
-      id,
-      expiry: now + CACHE_EXPIRY.MAILBOX_ID
-    });
-    return id;
-  }
-  
-  return null;
+  const record = await getCachedMailboxRecord(db, address);
+  return record?.id || null;
 }
 
 /**
@@ -73,12 +122,8 @@ export async function getCachedMailboxId(db, address) {
  */
 export function updateMailboxIdCache(address, id) {
   const normalized = String(address || '').trim().toLowerCase();
-  if (!normalized || !id) return;
-  
-  caches.mailboxId.set(normalized, {
-    id,
-    expiry: Date.now() + CACHE_EXPIRY.MAILBOX_ID
-  });
+  const cached = normalized ? caches.mailboxId.get(normalized) : null;
+  updateMailboxRecordCache(address, { id, forwardTo: cached?.forwardTo || null });
 }
 
 /**
@@ -89,6 +134,7 @@ export function invalidateMailboxCache(address) {
   const normalized = String(address || '').trim().toLowerCase();
   if (normalized) {
     caches.mailboxId.delete(normalized);
+    pendingRequests.mailboxRecord.delete(normalized);
   }
 }
 
@@ -109,25 +155,38 @@ export async function getCachedUserQuota(db, userId) {
   if (cached && cached.expiry > now) {
     return { used: cached.used, limit: cached.limit };
   }
-  
-  // 查询数据库
+
+  const pending = pendingRequests.userQuota.get(userId);
+  if (pending) {
+    return pending;
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const userRes = await db.prepare('SELECT mailbox_limit FROM users WHERE id = ?').bind(userId).all();
+      const limit = userRes?.results?.[0]?.mailbox_limit || 10;
+
+      const countRes = await db.prepare('SELECT COUNT(1) AS c FROM user_mailboxes WHERE user_id = ?').bind(userId).all();
+      const used = countRes?.results?.[0]?.c || 0;
+
+      caches.userQuota.set(userId, {
+        used,
+        limit,
+        expiry: Date.now() + CACHE_EXPIRY.USER_QUOTA
+      });
+
+      return { used, limit };
+    } catch (error) {
+      console.error('获取用户配额失败:', error);
+      return { used: 0, limit: 0 };
+    }
+  })();
+
+  pendingRequests.userQuota.set(userId, requestPromise);
   try {
-    const userRes = await db.prepare('SELECT mailbox_limit FROM users WHERE id = ?').bind(userId).all();
-    const limit = userRes?.results?.[0]?.mailbox_limit || 10;
-    
-    const countRes = await db.prepare('SELECT COUNT(1) AS c FROM user_mailboxes WHERE user_id = ?').bind(userId).all();
-    const used = countRes?.results?.[0]?.c || 0;
-    
-    caches.userQuota.set(userId, {
-      used,
-      limit,
-      expiry: now + CACHE_EXPIRY.USER_QUOTA
-    });
-    
-    return { used, limit };
-  } catch (error) {
-    console.error('获取用户配额失败:', error);
-    return { used: 0, limit: 0 };
+    return await requestPromise;
+  } finally {
+    pendingRequests.userQuota.delete(userId);
   }
 }
 
@@ -138,6 +197,7 @@ export async function getCachedUserQuota(db, userId) {
 export function invalidateUserQuotaCache(userId) {
   if (userId) {
     caches.userQuota.delete(userId);
+    pendingRequests.userQuota.delete(userId);
   }
 }
 
@@ -157,18 +217,31 @@ export async function getCachedSystemStat(db, key, queryFn) {
   if (cached && cached.expiry > now) {
     return cached.value;
   }
-  
-  // 执行查询
+
+  const pending = pendingRequests.systemStat.get(key);
+  if (pending) {
+    return pending;
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const value = await queryFn(db);
+      caches.systemStat.set(key, {
+        value,
+        expiry: Date.now() + CACHE_EXPIRY.SYSTEM_STAT
+      });
+      return value;
+    } catch (error) {
+      console.error('获取系统统计失败:', error);
+      return cached?.value ?? null;
+    }
+  })();
+
+  pendingRequests.systemStat.set(key, requestPromise);
   try {
-    const value = await queryFn(db);
-    caches.systemStat.set(key, {
-      value,
-      expiry: now + CACHE_EXPIRY.SYSTEM_STAT
-    });
-    return value;
-  } catch (error) {
-    console.error('获取系统统计失败:', error);
-    return cached?.value ?? null;
+    return await requestPromise;
+  } finally {
+    pendingRequests.systemStat.delete(key);
   }
 }
 
@@ -179,5 +252,6 @@ export async function getCachedSystemStat(db, key, queryFn) {
 export function invalidateSystemStatCache(key) {
   if (key) {
     caches.systemStat.delete(key);
+    pendingRequests.systemStat.delete(key);
   }
 }

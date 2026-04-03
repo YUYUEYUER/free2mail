@@ -47,6 +47,8 @@ async function performFirstTimeSetup(db) {
     await db.prepare('SELECT 1 FROM sent_emails LIMIT 1').all();
     // 所有5个必要表都存在，执行字段迁移
     await migrateMailboxesFields(db);
+    await createIndexes(db);
+    await ensureMessageSearch(db);
     return;
   } catch (e) {
     // 有表不存在，继续初始化
@@ -62,6 +64,7 @@ async function performFirstTimeSetup(db) {
   
   // 创建索引
   await createIndexes(db);
+  await ensureMessageSearch(db);
 }
 
 /**
@@ -78,6 +81,8 @@ async function createIndexes(db) {
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_read_received ON messages(mailbox_id, is_read, received_at DESC);`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_code_received ON messages(mailbox_id, verification_code, received_at DESC);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);`);
@@ -86,6 +91,33 @@ async function createIndexes(db) {
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);`);
+}
+
+/**
+ * 创建邮件全文搜索结构和触发器
+ * @param {object} db - 数据库连接对象
+ */
+async function ensureMessageSearch(db) {
+  await db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(sender, subject, preview, verification_code, content='messages', content_rowid='id', tokenize='unicode61');");
+
+  await db.exec("CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN INSERT INTO messages_fts(rowid, sender, subject, preview, verification_code) VALUES (new.id, COALESCE(new.sender, ''), COALESCE(new.subject, ''), COALESCE(new.preview, ''), COALESCE(new.verification_code, '')); END;");
+
+  await db.exec("CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN INSERT INTO messages_fts(messages_fts, rowid, sender, subject, preview, verification_code) VALUES ('delete', old.id, COALESCE(old.sender, ''), COALESCE(old.subject, ''), COALESCE(old.preview, ''), COALESCE(old.verification_code, '')); END;");
+
+  await db.exec("CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN INSERT INTO messages_fts(messages_fts, rowid, sender, subject, preview, verification_code) VALUES ('delete', old.id, COALESCE(old.sender, ''), COALESCE(old.subject, ''), COALESCE(old.preview, ''), COALESCE(old.verification_code, '')); INSERT INTO messages_fts(rowid, sender, subject, preview, verification_code) VALUES (new.id, COALESCE(new.sender, ''), COALESCE(new.subject, ''), COALESCE(new.preview, ''), COALESCE(new.verification_code, '')); END;");
+
+  try {
+    const messageCountRow = await db.prepare('SELECT COUNT(1) AS c FROM messages').first();
+    const ftsCountRow = await db.prepare('SELECT COUNT(1) AS c FROM messages_fts').first();
+    const messageCount = Number(messageCountRow?.c || 0);
+    const ftsCount = Number(ftsCountRow?.c || 0);
+
+    if (messageCount > 0 && ftsCount === 0) {
+      await db.exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');`);
+    }
+  } catch (error) {
+    console.error('邮件全文索引检查失败:', error);
+  }
 }
 
 /**
@@ -205,4 +237,5 @@ export async function setupDatabase(db) {
   
   // 创建所有索引
   await createIndexes(db);
+  await ensureMessageSearch(db);
 }

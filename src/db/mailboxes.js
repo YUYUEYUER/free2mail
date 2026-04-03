@@ -5,11 +5,80 @@
 
 import {
   getCachedMailboxId,
-  updateMailboxIdCache,
-  invalidateMailboxCache,
+  getCachedMailboxRecord,
+  updateMailboxRecordCache,
   invalidateSystemStatCache,
   getCachedSystemStat
 } from '../utils/cache.js';
+
+function touchMailboxAccess(db, mailboxId) {
+  if (!mailboxId) return;
+  db.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .bind(mailboxId)
+    .run()
+    .catch(() => {});
+}
+
+/**
+ * 获取或创建邮箱记录，如果邮箱不存在则自动创建
+ * @param {object} db - 数据库连接对象
+ * @param {string} address - 邮箱地址
+ * @returns {Promise<{id:number, forwardTo:string|null}>} 邮箱记录
+ */
+export async function getOrCreateMailboxRecord(db, address) {
+  const normalized = String(address || '').trim().toLowerCase();
+  if (!normalized) throw new Error('无效的邮箱地址');
+
+  const cachedRecord = await getCachedMailboxRecord(db, normalized);
+  if (cachedRecord?.id) {
+    touchMailboxAccess(db, cachedRecord.id);
+    return cachedRecord;
+  }
+
+  let local_part = '';
+  let domain = '';
+  const at = normalized.indexOf('@');
+  if (at > 0 && at < normalized.length - 1) {
+    local_part = normalized.slice(0, at);
+    domain = normalized.slice(at + 1);
+  }
+  if (!local_part || !domain) throw new Error('无效的邮箱地址');
+
+  const insertResult = await db.prepare(
+    'INSERT OR IGNORE INTO mailboxes (address, local_part, domain, password_hash, last_accessed_at) VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)'
+  ).bind(normalized, local_part, domain).run();
+  const didInsert = (insertResult?.meta?.changes || 0) > 0;
+
+  const insertedId = didInsert
+    ? Number(insertResult?.meta?.last_row_id || 0)
+    : 0;
+
+  if (insertedId) {
+    const createdRecord = { id: insertedId, forwardTo: null };
+    updateMailboxRecordCache(normalized, createdRecord);
+    invalidateSystemStatCache('total_mailboxes');
+    return createdRecord;
+  }
+
+  const existing = await db.prepare('SELECT id, forward_to FROM mailboxes WHERE address = ? LIMIT 1')
+    .bind(normalized)
+    .first();
+
+  if (!existing?.id) {
+    throw new Error('邮箱创建失败');
+  }
+
+  const existingRecord = {
+    id: existing.id,
+    forwardTo: existing.forward_to || null
+  };
+  updateMailboxRecordCache(normalized, existingRecord);
+  if (didInsert) {
+    invalidateSystemStatCache('total_mailboxes');
+  }
+  touchMailboxAccess(db, existingRecord.id);
+  return existingRecord;
+}
 
 /**
  * 获取或创建邮箱ID，如果邮箱不存在则自动创建
@@ -19,53 +88,18 @@ import {
  * @throws {Error} 当邮箱地址无效时抛出异常
  */
 export async function getOrCreateMailboxId(db, address) {
-  const normalized = String(address || '').trim().toLowerCase();
-  if (!normalized) throw new Error('无效的邮箱地址');
-  
-  // 先检查缓存
-  const cachedId = await getCachedMailboxId(db, normalized);
-  if (cachedId) {
-    // 更新访问时间（使用后台任务，不阻塞主流程）
-    db.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .bind(cachedId).run().catch(() => {});
-    return cachedId;
-  }
-  
-  // 解析邮箱地址
-  let local_part = '';
-  let domain = '';
-  const at = normalized.indexOf('@');
-  if (at > 0 && at < normalized.length - 1) {
-    local_part = normalized.slice(0, at);
-    domain = normalized.slice(at + 1);
-  }
-  if (!local_part || !domain) throw new Error('无效的邮箱地址');
-  
-  // 再次查询数据库（避免并发创建）
-  const existing = await db.prepare('SELECT id FROM mailboxes WHERE address = ? LIMIT 1').bind(normalized).all();
-  if (existing.results && existing.results.length > 0) {
-    const id = existing.results[0].id;
-    updateMailboxIdCache(normalized, id);
-    await db.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?').bind(id).run();
-    return id;
-  }
-  
-  // 创建新邮箱
-  await db.prepare(
-    'INSERT INTO mailboxes (address, local_part, domain, password_hash, last_accessed_at) VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)'
-  ).bind(normalized, local_part, domain).run();
-  
-  // 查询新创建的ID
-  const created = await db.prepare('SELECT id FROM mailboxes WHERE address = ? LIMIT 1').bind(normalized).all();
-  const newId = created.results[0].id;
-  
-  // 更新缓存
-  updateMailboxIdCache(normalized, newId);
-  
-  // 使系统统计缓存失效（邮箱数量变化）
-  invalidateSystemStatCache('total_mailboxes');
-  
-  return newId;
+  const record = await getOrCreateMailboxRecord(db, address);
+  return record.id;
+}
+
+/**
+ * 根据邮箱地址获取邮箱记录
+ * @param {object} db - 数据库连接对象
+ * @param {string} address - 邮箱地址
+ * @returns {Promise<{id:number, forwardTo:string|null}|null>} 邮箱记录
+ */
+export async function getMailboxRecordByAddress(db, address) {
+  return await getCachedMailboxRecord(db, address);
 }
 
 /**
@@ -75,11 +109,7 @@ export async function getOrCreateMailboxId(db, address) {
  * @returns {Promise<number|null>} 邮箱ID，如果不存在返回null
  */
 export async function getMailboxIdByAddress(db, address) {
-  const normalized = String(address || '').trim().toLowerCase();
-  if (!normalized) return null;
-  
-  // 使用缓存
-  return await getCachedMailboxId(db, normalized);
+  return await getCachedMailboxId(db, address);
 }
 
 /**
@@ -179,12 +209,6 @@ export async function getTotalMailboxCount(db) {
  * @returns {Promise<string|null>} 转发目标地址，无配置返回 null
  */
 export async function getForwardTarget(db, address) {
-  const normalized = String(address || '').trim().toLowerCase();
-  if (!normalized) return null;
-  
-  const result = await db.prepare(
-    'SELECT forward_to FROM mailboxes WHERE address = ? LIMIT 1'
-  ).bind(normalized).first();
-  
-  return result?.forward_to || null;
+  const record = await getMailboxRecordByAddress(db, address);
+  return record?.forwardTo || null;
 }

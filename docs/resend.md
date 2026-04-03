@@ -49,7 +49,7 @@ wrangler secret put RESEND_API_KEY
 
 # 设置普通变量（可写入 wrangler.toml 的 [vars]）
 # 多域名用逗号/空格分隔
-# 例：MAIL_DOMAIN="iding.asia, example.com"
+# 例：MAIL_DOMAIN="mail.example.com, example.com"
 ```
 
 方式二：Dashboard（Git 集成部署常用）

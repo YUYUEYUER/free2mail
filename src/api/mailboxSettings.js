@@ -4,6 +4,7 @@
  */
 
 import { isValidEmail } from '../utils/common.js';
+import { invalidateMailboxCache } from '../utils/cache.js';
 
 /**
  * 检查用户是否有权限操作指定邮箱
@@ -81,6 +82,7 @@ export async function handleSetForward(req, env) {
     // 更新转发设置
     await db.prepare('UPDATE mailboxes SET forward_to = ? WHERE id = ?')
       .bind(forwardTarget, mailbox_id).run();
+    invalidateMailboxCache(mailbox.address);
     
     return new Response(JSON.stringify({
       success: true,
@@ -230,8 +232,13 @@ export async function handleBatchForward(req, env) {
     
     // 批量更新
     const placeholders = mailbox_ids.map(() => '?').join(',');
+    const addressRows = await db.prepare(`SELECT address FROM mailboxes WHERE id IN (${placeholders})`)
+      .bind(...mailbox_ids).all();
     await db.prepare(`UPDATE mailboxes SET forward_to = ? WHERE id IN (${placeholders})`)
       .bind(forwardTarget, ...mailbox_ids).run();
+    for (const row of (addressRows?.results || [])) {
+      invalidateMailboxCache(row.address);
+    }
     
     return new Response(JSON.stringify({
       success: true,
@@ -343,6 +350,9 @@ export async function handleBatchForwardByAddress(req, env) {
     const placeholders = normalizedAddresses.map(() => '?').join(',');
     const result = await db.prepare(`UPDATE mailboxes SET forward_to = ? WHERE address IN (${placeholders})`)
       .bind(forwardTarget, ...normalizedAddresses).run();
+    for (const address of normalizedAddresses) {
+      invalidateMailboxCache(address);
+    }
     
     return new Response(JSON.stringify({
       success: true,

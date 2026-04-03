@@ -96,6 +96,52 @@
   .control-row{ flex-direction: column; align-items: stretch; gap: 12px; }
   .btn-group{ flex-direction: column; }
   .email-item .email-actions{ opacity: 1; }
+
+  .inbox-search-grid{
+    grid-template-columns: 1fr;
+  }
+
+  .inbox-toolbar-actions{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .email-filter-summary{
+    justify-content: center;
+  }
+
+  .filter-preset-row{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-preset-list{
+    justify-content: stretch;
+  }
+
+  .filter-preset-chip{
+    width: 100%;
+    justify-content: center;
+  }
+
+  .email-pending-banner{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .email-pending-banner__head{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .email-pending-banner__actions{
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .email-live-status{
+    justify-content: center;
+  }
   
   /* 移动端邮件列表布局全面重构 */
   .email-meta{
@@ -154,6 +200,30 @@
   .email-item{
     display: block;
     padding: 10px 12px;
+  }
+
+  .email-view-toolbar{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .email-detail-layout{
+    grid-template-columns: 1fr;
+  }
+
+  .email-view-tabs{
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .email-view-tab{
+    width: 100%;
+    text-align: center;
+  }
+
+  .email-frame{
+    min-height: 320px;
   }
   
   .email-content{
@@ -255,5 +325,3 @@
   .email-display{ padding: 12px; font-size: 14px; }
   .list-viewport{ max-height: calc(100vh - 260px); overflow: auto; }
 }
-
-

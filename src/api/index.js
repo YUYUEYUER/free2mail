@@ -45,7 +45,7 @@ export async function handleApiRequest(request, db, mailDomains, options = {
     }
     
     // 对于邮件相关API，限制只能访问自己的邮箱
-    if (path === '/api/emails' && request.method === 'GET') {
+    if (path.startsWith('/api/emails') && request.method === 'GET') {
       const requestedMailbox = url.searchParams.get('mailbox');
       if (requestedMailbox && requestedMailbox.toLowerCase() !== mailboxAddress?.toLowerCase()) {
         return errorResponse('只能访问自己的邮箱', 403);

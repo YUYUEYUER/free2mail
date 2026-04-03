@@ -1,6 +1,6 @@
-# Freemail - 临时邮箱服务
+# Free2Mail - 临时邮箱服务
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/idinging/freemail)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YUYUEYUER/free2mail)
 
 一个基于 Cloudflare Workers + D1 + R2 构建的**开源临时邮箱服务**，支持邮件接收、发送、转发、用户管理等完整功能。
 
@@ -11,7 +11,7 @@
 📖 **[一键部署指南](docs/yijianbushu.md)** | 📬 **[Resend 发件配置](docs/resend.md)** | 📚 **[API 文档](docs/api.md)**
 
 ## 📸 项目展示
-### 体验地址： https://mailexhibit.dinging.top/
+### 体验地址：部署后使用你自己的 Worker 域名访问
 
 ### 体验账号： guest
 ### 体验密码： admin
@@ -188,23 +188,6 @@ wrangler d1 execute TEMP_MAIL_DB --command "SELECT * FROM mailboxes LIMIT 10"
 - **静态资源缓存**：更新后在 Cloudflare 控制台 Purge Everything，浏览器强制刷新
 - **R2/D1 费用**：有免费额度限制，建议定期清理过期邮件
 - **安全**：生产环境务必修改默认的 `ADMIN_PASSWORD` 和 `JWT_TOKEN`
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=idinging/freemail&type=Date)](https://www.star-history.com/#idinging/freemail&Date)
-
-## 联系方式
-
-- 微信：`iYear1213`
-
-## Buy me a coffee
-
-如果你觉得本项目对你有帮助，欢迎赞赏支持：
-
-<p align="left">
-  <img src="pic/alipay.jpg" alt="支付宝赞赏码" height="400" />
-  <img src="pic/weichat.jpg" alt="微信赞赏码" height="400" />
-</p>
 
 ## 许可证
 

@@ -62,7 +62,7 @@ export function buildMockEmails(count = 5) {
   
   for (let i = 0; i < count; i++) {
     emails.push({
-      id: 1000 + i,
+      id: 1000 + (count - i),
       sender: senders[i % senders.length],
       subject: subjects[i % subjects.length],
       received_at: new Date(now - i * 3600000).toISOString(),

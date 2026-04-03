@@ -89,6 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_received_at ON messages(received_at DESC
 CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);
+CREATE INDEX IF NOT EXISTS idx_messages_mailbox_read_received ON messages(mailbox_id, is_read, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_mailbox_code_received ON messages(mailbox_id, verification_code, received_at DESC);
 
 -- users 索引
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -104,3 +106,22 @@ CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);
 CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);
 
+-- messages FTS 全文索引
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(sender, subject, preview, verification_code, content='messages', content_rowid='id', tokenize='unicode61');
+
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, sender, subject, preview, verification_code)
+  VALUES (new.id, COALESCE(new.sender, ''), COALESCE(new.subject, ''), COALESCE(new.preview, ''), COALESCE(new.verification_code, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, sender, subject, preview, verification_code)
+  VALUES ('delete', old.id, COALESCE(old.sender, ''), COALESCE(old.subject, ''), COALESCE(old.preview, ''), COALESCE(old.verification_code, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, sender, subject, preview, verification_code)
+  VALUES ('delete', old.id, COALESCE(old.sender, ''), COALESCE(old.subject, ''), COALESCE(old.preview, ''), COALESCE(old.verification_code, ''));
+  INSERT INTO messages_fts(rowid, sender, subject, preview, verification_code)
+  VALUES (new.id, COALESCE(new.sender, ''), COALESCE(new.subject, ''), COALESCE(new.preview, ''), COALESCE(new.verification_code, ''));
+END;

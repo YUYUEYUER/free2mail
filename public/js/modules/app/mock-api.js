@@ -222,6 +222,33 @@ export function buildMockEmails(count = 6) {
   }));
 }
 
+function addMockSearchSnippet(list, keyword) {
+  const normalized = String(keyword || '').trim();
+  if (!normalized) return list;
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(escaped, 'ig');
+  return list.map((item) => {
+    const source = String(item.preview || item.subject || item.sender || '');
+    const snippet = source.replace(pattern, (match) => `[[[H]]]${match}[[[/H]]]`);
+    return { ...item, search_snippet: snippet !== source ? snippet : '' };
+  });
+}
+
+function addMockSearchHitFields(list, filters) {
+  const keyword = String(filters.q || '').trim().toLowerCase();
+  const senderNeedle = String(filters.sender || '').trim().toLowerCase();
+  const codeNeedle = String(filters.code || '').trim();
+
+  return list.map((item) => {
+    const hitFields = [];
+    if (keyword && String(item.subject || '').toLowerCase().includes(keyword)) hitFields.push('主题');
+    if ((keyword && String(item.sender || '').toLowerCase().includes(keyword)) || (senderNeedle && String(item.sender || '').toLowerCase().includes(senderNeedle))) hitFields.push('发件人');
+    if (keyword && String(item.preview || '').toLowerCase().includes(keyword)) hitFields.push('摘要');
+    if ((keyword && String(item.verification_code || '').toLowerCase().includes(keyword)) || (codeNeedle && String(item.verification_code || '') === codeNeedle)) hitFields.push('验证码');
+    return { ...item, search_hit_fields: hitFields };
+  });
+}
+
 /**
  * 构建模拟邮件详情
  * @param {number} id - 邮件 ID
@@ -272,6 +299,16 @@ export function buildMockSentEmailDetail(id, fromAddress = '') {
     text_content: entry.summary,
     html_content: `<p>${entry.summary}</p>`
   };
+}
+
+function findMailboxEmailListById(id) {
+  for (const [mailbox, list] of MOCK_STATE.emailsByMailbox.entries()) {
+    const index = list.findIndex((item) => Number(item.id) === Number(id));
+    if (index >= 0) {
+      return { mailbox, list, index };
+    }
+  }
+  return null;
 }
 
 /**
@@ -337,7 +374,76 @@ export async function mockApi(path, options = {}) {
       list = buildMockEmails(6);
       MOCK_STATE.emailsByMailbox.set(mailbox, list);
     }
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const sender = String(url.searchParams.get('sender') || '').trim().toLowerCase();
+    const code = String(url.searchParams.get('code') || '').trim();
+    const hitField = String(url.searchParams.get('hit_field') || 'all').trim().toLowerCase();
+    const read = String(url.searchParams.get('read') || 'all').trim().toLowerCase();
+    const dateFrom = String(url.searchParams.get('date_from') || '').trim();
+    const dateTo = String(url.searchParams.get('date_to') || '').trim();
+
+    if (q) {
+      list = list.filter((item) => [item.subject, item.sender, item.preview, item.verification_code].some((field) => String(field || '').toLowerCase().includes(q)));
+    }
+    if (sender) {
+      list = list.filter((item) => String(item.sender || '').toLowerCase().includes(sender));
+    }
+    if (code) {
+      list = list.filter((item) => String(item.verification_code || '') === code);
+    }
+    if (read === 'read') {
+      list = list.filter((item) => Number(item.is_read || 0) === 1);
+    } else if (read === 'unread') {
+      list = list.filter((item) => Number(item.is_read || 0) === 0);
+    }
+    if (dateFrom) {
+      list = list.filter((item) => String(item.received_at || '') >= dateFrom);
+    }
+    if (dateTo) {
+      list = list.filter((item) => String(item.received_at || '') <= `${dateTo}T23:59:59.999Z`);
+    }
+    list = addMockSearchHitFields(list, { q, sender, code });
+    if (q && ['subject', 'sender', 'preview', 'code'].includes(hitField)) {
+      const labelMap = { subject: '主题', sender: '发件人', preview: '摘要', code: '验证码' };
+      list = list.filter((item) => Array.isArray(item.search_hit_fields) && item.search_hit_fields.includes(labelMap[hitField]));
+    }
+    if (q) {
+      list = addMockSearchSnippet(list, q);
+    }
     return new Response(JSON.stringify(list), { headers: jsonHeaders });
+  }
+
+  // GET /api/emails/live
+  if (url.pathname === '/api/emails/live' && (!options.method || options.method === 'GET')) {
+    const mailbox = url.searchParams.get('mailbox') || '';
+    let list = MOCK_STATE.emailsByMailbox.get(mailbox);
+    if (!list) {
+      list = buildMockEmails(6);
+      MOCK_STATE.emailsByMailbox.set(mailbox, list);
+    }
+    const latest = Array.isArray(list) && list.length ? list[0] : null;
+    const latestId = Number(latest?.id || 0);
+    const sinceId = Number(url.searchParams.get('since_id') || 0);
+    return new Response(JSON.stringify({
+      changed: latestId > sinceId,
+      latestId,
+      latestReceivedAt: latest?.received_at || new Date().toISOString(),
+      timeout: latestId <= sinceId
+    }), { headers: jsonHeaders });
+  }
+
+  // GET /api/emails/delta
+  if (url.pathname === '/api/emails/delta' && (!options.method || options.method === 'GET')) {
+    const mailbox = url.searchParams.get('mailbox') || '';
+    let list = MOCK_STATE.emailsByMailbox.get(mailbox);
+    if (!list) {
+      list = buildMockEmails(6);
+      MOCK_STATE.emailsByMailbox.set(mailbox, list);
+    }
+    const sinceId = Number(url.searchParams.get('since_id') || 0);
+    const newestIndex = list.findIndex((item) => Number(item.id || 0) === sinceId);
+    const delta = sinceId > 0 && newestIndex >= 0 ? list.slice(0, newestIndex) : list;
+    return new Response(JSON.stringify(delta), { headers: jsonHeaders });
   }
 
   // GET /api/emails/batch
@@ -354,6 +460,16 @@ export async function mockApi(path, options = {}) {
   if (url.pathname.startsWith('/api/email/') && (!options.method || options.method === 'GET')) {
     const id = Number(url.pathname.split('/')[3]);
     return new Response(JSON.stringify(buildMockEmailDetail(id)), { headers: jsonHeaders });
+  }
+
+  // POST /api/email/:id/read
+  if (url.pathname.startsWith('/api/email/') && url.pathname.endsWith('/read') && options.method === 'POST') {
+    const id = Number(url.pathname.split('/')[3]);
+    const found = findMailboxEmailListById(id);
+    if (found) {
+      found.list[found.index] = { ...found.list[found.index], is_read: 1 };
+    }
+    return new Response(JSON.stringify({ success: true, updated: true, is_read: 1 }), { headers: jsonHeaders });
   }
 
   // GET /api/sent
@@ -480,9 +596,19 @@ export async function mockApi(path, options = {}) {
     }
   }
 
+  // DELETE /api/email/:id
+  if (url.pathname.startsWith('/api/email/') && options.method === 'DELETE') {
+    const id = Number(url.pathname.split('/')[3]);
+    const found = findMailboxEmailListById(id);
+    if (found) {
+      found.list.splice(found.index, 1);
+      return new Response(JSON.stringify({ success: true, deleted: true, message: '邮件已删除' }), { headers: jsonHeaders });
+    }
+    return new Response(JSON.stringify({ success: true, deleted: false, message: '邮件不存在或已被删除' }), { headers: jsonHeaders });
+  }
+
   // 演示模式禁止删除操作
   if ((url.pathname === '/api/emails' && options.method === 'DELETE') ||
-      (url.pathname.startsWith('/api/email/') && options.method === 'DELETE') ||
       (url.pathname === '/api/mailboxes' && options.method === 'DELETE') ||
       (url.pathname.startsWith('/api/sent/') && options.method === 'DELETE')) {
     return new Response('演示模式不可操作', { status: 403 });

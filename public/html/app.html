@@ -1,11 +1,11 @@
   <div class="topbar">
     <div class="brand">
     <span class="brand-icon" aria-hidden="true"><svg class="ui-icon"><use href="/icons.svg#logo"></use></svg></span>
-    <span class="brand-text">iDing's临时邮箱</span>
+    <span class="brand-text">Free2Mail 临时邮箱</span>
   </div>
   <div id="role-badge" class="role-badge" title="欢迎用户："></div>
   <div class="nav-actions">
-    <a id="repo" class="btn btn-ghost" href="https://github.com/idinging/freemail" target="_blank" rel="noopener noreferrer" title="GitHub 开源仓库">
+    <a id="repo" class="btn btn-ghost" href="https://github.com/YUYUEYUER/free2mail" target="_blank" rel="noopener noreferrer" title="GitHub 仓库">
       <span class="btn-icon" aria-hidden="true"><svg class="ui-icon"><use href="/icons.svg#repo"></use></svg></span>
       <span class="btn-text">GitHub</span>
     </a>
@@ -165,6 +165,73 @@
             <span id="list-status-text">加载中…</span>
           </div>
         </div>
+        <div id="email-search-bar" class="inbox-toolbar" style="display:none">
+          <div class="inbox-search-grid">
+            <label class="search-field">
+              <span class="search-field__label">关键词</span>
+              <input id="email-filter-keyword" class="input input-sm" type="text" placeholder="主题 / 摘要 / 发件人" />
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">发件人</span>
+              <input id="email-filter-sender" class="input input-sm" type="text" placeholder="support@example.com" />
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">验证码</span>
+              <input id="email-filter-code" class="input input-sm" type="text" placeholder="123456" />
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">已读状态</span>
+              <select id="email-filter-read" class="select select-sm">
+                <option value="all">全部</option>
+                <option value="unread">未读</option>
+                <option value="read">已读</option>
+              </select>
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">命中字段</span>
+              <select id="email-filter-hit-field" class="select select-sm">
+                <option value="all">全部字段</option>
+                <option value="subject">主题</option>
+                <option value="sender">发件人</option>
+                <option value="preview">摘要</option>
+                <option value="code">验证码</option>
+              </select>
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">开始日期</span>
+              <input id="email-filter-from" class="input input-sm" type="date" />
+            </label>
+            <label class="search-field">
+              <span class="search-field__label">结束日期</span>
+              <input id="email-filter-to" class="input input-sm" type="date" />
+            </label>
+          </div>
+          <div class="filter-preset-row">
+            <select id="email-filter-presets" class="select select-sm">
+              <option value="">已保存筛选器</option>
+            </select>
+            <button id="email-filter-save" class="btn btn-ghost btn-sm" type="button">保存当前筛选</button>
+            <button id="email-filter-rename" class="btn btn-ghost btn-sm" type="button">重命名</button>
+            <button id="email-filter-default" class="btn btn-ghost btn-sm" type="button">设为默认</button>
+            <button id="email-filter-delete" class="btn btn-ghost btn-sm" type="button">删除已选</button>
+          </div>
+          <div id="email-filter-preset-list" class="filter-preset-list" style="display:none"></div>
+          <div id="email-filter-summary" class="email-filter-summary"></div>
+          <div id="email-pending-banner" class="email-pending-banner" style="display:none">
+            <div class="email-pending-banner__head">
+              <div class="email-pending-banner__copy" id="email-pending-text">有新邮件到达</div>
+              <div class="email-pending-banner__actions">
+                <button id="email-pending-toggle" class="btn btn-ghost btn-sm" type="button">展开预览</button>
+                <button id="email-pending-action" class="btn btn-primary btn-sm" type="button">回到第一页查看</button>
+              </div>
+            </div>
+            <div id="email-pending-preview" class="email-pending-preview" style="display:none"></div>
+          </div>
+          <div class="inbox-toolbar-actions">
+            <span id="email-live-status" class="email-live-status" data-state="idle">实时暂停</span>
+            <button id="email-search-reset" class="btn btn-ghost btn-sm" type="button">清空筛选</button>
+          </div>
+        </div>
         <div class="list-viewport" style="position:relative;contain:layout paint;isolation:isolate;">
           <div id="list" class="list"></div>
           <div id="list-pager" class="pager" style="display:none">
@@ -231,7 +298,7 @@
           </div>
           <div class="field-group">
             <label class="field-label">发件名称（可选）</label>
-            <input id="compose-from-name" class="input field-input" type="text" placeholder="例如：iDing 支持团队" />
+            <input id="compose-from-name" class="input field-input" type="text" placeholder="例如：Free2Mail 支持团队" />
           </div>
           <div class="field-group">
             <label class="field-label">主题</label>
@@ -251,4 +318,3 @@
   </div>
 
   
-

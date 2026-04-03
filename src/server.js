@@ -1,5 +1,5 @@
 /**
- * Freemail 主入口文件
+ * Free2Mail 主入口文件
  * 
  * 本文件作为 Cloudflare Worker 的入口点，负责：
  * 1. 处理 HTTP 请求（通过 fetch 处理器）
@@ -17,7 +17,7 @@ import { bumpApiCacheVersion } from './api/helpers.js';
 import { extractEmail } from './utils/common.js';
 import { forwardByLocalPart, forwardByMailboxConfig } from './email/forwarder.js';
 import { parseEmailBody, extractVerificationCode } from './email/parser.js';
-import { getForwardTarget } from './db/mailboxes.js';
+import { getOrCreateMailboxRecord } from './db/mailboxes.js';
 
 export default {
   /**
@@ -94,11 +94,12 @@ export default {
       } catch (_) { }
 
       const resolvedRecipient = (envelopeTo || toHeader || '').toString();
-      const resolvedRecipientAddr = extractEmail(resolvedRecipient);
-      const localPart = (resolvedRecipientAddr.split('@')[0] || '').toLowerCase();
+      const mailbox = extractEmail(resolvedRecipient || toHeader);
+      const localPart = (mailbox.split('@')[0] || '').toLowerCase();
+      const mailboxRecord = await getOrCreateMailboxRecord(DB, mailbox);
 
       // 处理邮件转发（优先使用邮箱配置，否则使用全局规则）
-      const mailboxForwardTo = await getForwardTarget(DB, resolvedRecipientAddr);
+      const mailboxForwardTo = mailboxRecord?.forwardTo || null;
       if (mailboxForwardTo) {
         forwardByMailboxConfig(message, mailboxForwardTo, ctx);
       } else {
@@ -122,7 +123,6 @@ export default {
         htmlContent = '';
       }
 
-      const mailbox = extractEmail(resolvedRecipient || toHeader);
       const sender = extractEmail(fromHeader);
 
       // 存储到 R2
@@ -156,20 +156,7 @@ export default {
         verificationCode = extractVerificationCode({ subject, text: textContent, html: htmlContent });
       } catch (_) { }
 
-      // 存储到数据库
-      const resMb = await DB.prepare('SELECT id FROM mailboxes WHERE address = ?').bind(mailbox.toLowerCase()).all();
-      let mailboxId;
-      if (Array.isArray(resMb?.results) && resMb.results.length) {
-        mailboxId = resMb.results[0].id;
-      } else {
-        const [localPartMb, domain] = (mailbox || '').toLowerCase().split('@');
-        if (localPartMb && domain) {
-          await DB.prepare('INSERT INTO mailboxes (address, local_part, domain, password_hash, last_accessed_at) VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)')
-            .bind((mailbox || '').toLowerCase(), localPartMb, domain).run();
-          const created = await DB.prepare('SELECT id FROM mailboxes WHERE address = ?').bind((mailbox || '').toLowerCase()).all();
-          mailboxId = created?.results?.[0]?.id;
-        }
-      }
+      const mailboxId = mailboxRecord?.id;
       if (!mailboxId) throw new Error('无法解析或创建 mailbox 记录');
 
       // 解析收件人列表
