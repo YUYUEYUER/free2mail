@@ -100,3 +100,12 @@ Thumbs.db
 /asset/bookmarks_2025_9_5.html
 
 eml
+
+# Local smoke-test screenshots
+/admin-*.png
+/app-*.png
+/guest-*.png
+/login-*.png
+/mailboxes-*.png
+/mobile-*.png
+/research-*.png
