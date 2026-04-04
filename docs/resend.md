@@ -50,12 +50,28 @@ wrangler secret put RESEND_API_KEY
 # 设置普通变量（可写入 wrangler.toml 的 [vars]）
 # 多域名用逗号/空格分隔
 # 例：MAIL_DOMAIN="mail.example.com, example.com"
+# 当前项目推荐：MAIL_DOMAIN="tpunovera.buzz, lyapunov.one"
 ```
 
 方式二：Dashboard（Git 集成部署常用）
 - 进入 Cloudflare Dashboard → Workers → 选中你的 Worker → Settings → Variables。
 - 在 Secrets 添加 `RESEND_API_KEY`。
 - 在 Variables 添加 `MAIL_DOMAIN`，值为你用于收取/发件的域名列表（需与 Resend 已验证域名一致）。
+
+双域名发件示例：
+
+```bash
+# 两个域名分别使用不同密钥
+RESEND_API_KEY="tpunovera.buzz=re_key_a,lyapunov.one=re_key_b"
+
+# 两个域名共用一把密钥
+RESEND_API_KEY="tpunovera.buzz=re_shared,lyapunov.one=re_shared"
+```
+
+推荐说明：
+- 访问站点可使用 `mail.lyapunov.one`
+- 真正用于收件/发件的邮箱域更推荐配置成 `lyapunov.one`
+- `mail.lyapunov.one` 作为邮箱后缀可行，但在 Email Routing 与发件平台验证上通常不如根域稳定
 
 ## 4. 关联项目并部署
 

@@ -12,8 +12,9 @@ database_id = "a908cb9d-c1cd-46de-aab4-173af01924b2" # 你的database_id
 # 登录会话过期时间（单位：天，默认7天）
 # 环境变量
 [vars]
-MAIL_DOMAIN = "tpunovera.buzz"
+MAIL_DOMAIN = "tpunovera.buzz, lyapunov.one"
 ADMIN_NAME = "admin"
+# 推荐把访问站点挂在 mail.lyapunov.one，把收件/发件域配置为 lyapunov.one
 # FORWARD_RULES="[{"prefix":"vip","email":"a@example.com"},{"prefix":"*","email":"2141083706@qq.com"}]"
 
 

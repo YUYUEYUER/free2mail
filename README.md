@@ -115,6 +115,18 @@
 | RESEND_API_KEY | Resend 发件密钥，支持多域名配置 | 否 |
 | FORWARD_RULES | 邮件转发规则 | 否 |
 
+多域名示例：
+
+```bash
+MAIL_DOMAIN="tpunovera.buzz, lyapunov.one"
+```
+
+说明：
+- 站点访问域名可以使用 `mail.lyapunov.one`
+- 收件/发件域更推荐直接使用 `lyapunov.one`
+- 如果你希望双域名邮箱同时可收发，建议用 `tpunovera.buzz` 和 `lyapunov.one`
+- `mail.lyapunov.one` 更适合做应用访问入口，不建议优先作为邮箱后缀
+
 <details>
 <summary><strong>RESEND_API_KEY 配置格式</strong></summary>
 
@@ -127,6 +139,12 @@ RESEND_API_KEY="domain1.com=re_key1,domain2.com=re_key2"
 
 # JSON格式
 RESEND_API_KEY='{"domain1.com":"re_key1","domain2.com":"re_key2"}'
+
+# 当前项目双域名示例
+RESEND_API_KEY="tpunovera.buzz=re_key_a,lyapunov.one=re_key_b"
+
+# 如果两个域名共用同一把 Resend Key
+RESEND_API_KEY="tpunovera.buzz=re_shared,lyapunov.one=re_shared"
 ```
 
 系统会根据发件人域名自动选择对应的 API 密钥。

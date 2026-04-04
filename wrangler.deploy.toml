@@ -1,0 +1,17 @@
+name = "mailfree"
+main = "src/server.js"
+compatibility_date = "2024-01-01"
+account_id = "c90cf456ae4ee250097c097c0815ed45"
+
+[[d1_databases]]
+binding = "TEMP_MAIL_DB"
+database_name = "maill_free_db"
+database_id = "a908cb9d-c1cd-46de-aab4-173af01924b2"
+
+[vars]
+MAIL_DOMAIN = "tpunovera.buzz, lyapunov.one"
+ADMIN_NAME = "admin"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
