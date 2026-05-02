@@ -100,6 +100,13 @@ function describeMailbox(mailbox) {
   return parts.join(' · ');
 }
 
+function describeAssignments(mailbox) {
+  const users = Array.isArray(mailbox.assigned_users) ? mailbox.assigned_users : [];
+  if (!users.length) return '未分配用户';
+  const preview = users.slice(0, 2).join('、');
+  return users.length > 2 ? `归属 ${preview} 等 ${users.length} 人` : `归属 ${preview}`;
+}
+
 function renderMailboxStat(label, value, tone = '') {
   return `
     <div class="mailbox-stat${tone ? ` ${tone}` : ''}">
@@ -199,6 +206,7 @@ export function renderCard(m) {
   const { localPart, domain } = splitAddress(m.address);
   const kicker = getMailboxKicker(m);
   const summary = describeMailbox(m);
+  const assignmentSummary = describeAssignments(m);
   
   return `
     <div class="mailbox-card" data-address="${addr}" data-id="${m.id}" data-action="jump">
@@ -215,10 +223,11 @@ export function renderCard(m) {
       </div>
       <div class="card-body">
         <div class="mailbox-summary">${escapeHtml(summary)}</div>
+        <div class="mailbox-owner-summary">${escapeHtml(assignmentSummary)}</div>
         <div class="mailbox-stat-strip">
           ${renderMailboxStat('创建', shortTime)}
           ${renderMailboxStat('登录', m.can_login ? '允许' : '关闭', m.can_login ? 'is-positive' : '')}
-          ${renderMailboxStat('密码', m.password_is_default ? '默认' : '已设')}
+          ${renderMailboxStat('归属', String(m.assigned_count || 0) + ' 人')}
         </div>
         <div class="mailbox-meta">
           <span class="created-time">完整时间 ${time}</span>
@@ -227,10 +236,12 @@ export function renderCard(m) {
           ${m.is_favorite ? `<span class="favorite-status active" title="已收藏">${icon('star')} 收藏</span>` : ''}
           ${forward ? `<span class="forward-indicator" title="转发到: ${forward}">${icon('forward')} 转发</span>` : ''}
           <span class="login-indicator" title="${m.can_login ? '允许登录' : '禁止登录'}">${icon(m.can_login ? 'check' : 'ban')} ${m.can_login ? '放行' : '禁止'}</span>
+          <span class="owner-indicator" title="${escapeHtml(assignmentSummary)}">${icon('user')} ${escapeHtml(Array.isArray(m.assigned_users) && m.assigned_users.length ? m.assigned_users.slice(0, 2).join(' / ') : '未分配')}</span>
         </div>
       </div>
       <div class="card-actions">
         <button class="btn btn-sm" data-action="copy" title="复制">${buttonIcon('copy', '复制')}</button>
+        <button class="btn btn-sm" data-action="assign" title="分配用户">${buttonIcon('user', '分配')}</button>
         <button class="btn btn-sm ${m.is_favorite ? 'active' : ''}" data-action="favorite" title="${m.is_favorite ? '取消收藏' : '收藏'}">${buttonIcon('star', m.is_favorite ? '已收藏' : '收藏')}</button>
         <button class="btn btn-sm" data-action="forward" title="设置转发">${buttonIcon('forward', '转发')}</button>
         <button class="btn btn-sm" data-action="login" title="${m.can_login ? '禁止登录' : '允许登录'}">${buttonIcon(m.can_login ? 'ban' : 'check', m.can_login ? '禁用' : '允许')}</button>
@@ -252,6 +263,7 @@ export function renderListItem(m) {
   const { domain } = splitAddress(m.address);
   const kicker = getMailboxKicker(m);
   const summary = describeMailbox(m);
+  const assignmentSummary = describeAssignments(m);
   
   return `
     <div class="mailbox-list-item" data-address="${addr}" data-id="${m.id}">
@@ -260,11 +272,13 @@ export function renderListItem(m) {
         <div class="item-kicker">${escapeHtml(kicker)} · @${escapeHtml(domain || '')}</div>
         <div class="item-address" title="${addr}">${addr}</div>
         <div class="item-summary">${escapeHtml(summary)}</div>
+        <div class="item-owner-summary">${escapeHtml(assignmentSummary)}</div>
         <div class="item-meta">
           <span class="item-time">创建于 ${time}</span>
           <span class="item-indicators">
             <span class="indicator ${m.password_is_default ? 'password-default' : 'password-custom'}">${m.password_is_default ? '默认密码' : '已设密码'}</span>
             <span class="indicator ${m.can_login ? 'login-enabled' : 'login-disabled'}">${m.can_login ? '允许登录' : '禁止登录'}</span>
+            <span class="indicator owner">归属 ${Number(m.assigned_count || 0)} 人</span>
             ${m.is_favorite ? '<span class="indicator favorite">已收藏</span>' : ''}
             ${forward ? `<span class="indicator forward" title="转发到: ${forward}">转发 ${forward.length > 18 ? `${forward.substring(0, 18)}...` : forward}</span>` : ''}
           </span>
@@ -272,6 +286,7 @@ export function renderListItem(m) {
       </div>
       <div class="item-actions">
         <button class="btn btn-sm" data-action="copy" title="复制">${buttonIcon('copy', '复制')}</button>
+        <button class="btn btn-sm" data-action="assign" title="分配用户">${buttonIcon('user', '分配')}</button>
         <button class="btn btn-sm" data-action="jump" title="查看">${buttonIcon('mail', '查看')}</button>
         <button class="btn btn-sm" data-action="forward" title="转发设置">${buttonIcon('forward', '转发')}</button>
         <button class="btn btn-sm ${m.is_favorite ? 'active' : ''}" data-action="favorite" title="${m.is_favorite ? '取消收藏' : '收藏'}">${buttonIcon('star', m.is_favorite ? '已收藏' : '收藏')}</button>

@@ -18,6 +18,7 @@ export function initMockUsers() {
       { id: 3, username: 'operator', role: 'admin', can_send: 0, mailbox_limit: 20, created_at: now.toISOString().replace('T', ' ').slice(0, 19) },
     ];
     globalThis.__MOCK_USER_MAILBOXES__ = new Map();
+    globalThis.__MOCK_MAILBOXES__ = [];
     
     // 为每个演示用户预生成若干邮箱
     try {
@@ -27,6 +28,7 @@ export function initMockUsers() {
         const count = Math.max(minCount, Math.min(maxCount, Math.floor(Math.random() * (maxCount - minCount + 1)) + minCount));
         const boxes = buildMockMailboxes(count, 0, MOCK_DOMAINS);
         globalThis.__MOCK_USER_MAILBOXES__.set(u.id, boxes);
+        globalThis.__MOCK_MAILBOXES__.push(...boxes);
       }
     } catch (_) {
       // 忽略演示数据预生成失败

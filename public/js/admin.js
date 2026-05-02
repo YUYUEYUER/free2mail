@@ -80,6 +80,7 @@ function syncMailboxPanelState() {
 let currentPage = 1, pageSize = 20, totalUsers = 0;
 let currentViewingUser = null;
 let mailboxPage = 1, mailboxPageSize = 20, totalMailboxes = 0;
+let currentUsers = [];
 
 // DOM 元素
 const els = {
@@ -189,6 +190,7 @@ async function loadUsers() {
   try {
     const data = await getUsers({ page: currentPage, size: pageSize });
     const users = Array.isArray(data) ? data : (data.list || []);
+    currentUsers = users;
     totalUsers = data.total || users.length;
     
     renderUserList(users, els.usersTbody);
@@ -249,7 +251,7 @@ async function openEditModal(userId) {
   try {
     const data = await getUsers({ page: 1, size: 100 });
     const users = Array.isArray(data) ? data : (data.list || []);
-    const user = users.find(u => u.id == userId);
+    const user = users.find(u => u.id == userId) || currentUsers.find(u => u.id == userId);
     if (!user) { showToast('用户不存在', 'error'); return; }
     
     currentViewingUser = user;
@@ -286,7 +288,7 @@ async function openMailboxesPanel(userId) {
   try {
     const data = await getUsers({ page: 1, size: 100 });
     const users = Array.isArray(data) ? data : (data.list || []);
-    const user = users.find(u => u.id == userId);
+    const user = users.find(u => u.id == userId) || currentUsers.find(u => u.id == userId);
     if (!user) { showToast('用户不存在', 'error'); return; }
     
     currentViewingUser = user;
@@ -413,12 +415,14 @@ async function handleAssignMailbox() {
   try {
     let successCount = 0;
     let failCount = 0;
+    const errors = [];
     for (const address of addresses) {
       try {
         await assignMailbox(username, address);
         successCount++;
       } catch(e) {
         failCount++;
+        errors.push(e?.message || `${address} 分配失败`);
       }
     }
     
@@ -427,7 +431,7 @@ async function handleAssignMailbox() {
     } else if (successCount > 0 && failCount > 0) {
       showToast(`成功 ${successCount} 个，失败 ${failCount} 个`, 'warning');
     } else {
-      showToast('分配失败', 'error');
+      showToast(errors[0] || '分配失败', 'error');
     }
     
     els.aModal?.classList.remove('show');
@@ -439,7 +443,7 @@ async function handleAssignMailbox() {
       loadUserMailboxes();
     }
   } catch(e) {
-    showToast('分配失败', 'error');
+    showToast(e?.message || '分配失败', 'error');
   }
 }
 
@@ -468,12 +472,14 @@ async function handleUnassignMailbox() {
   try {
     let successCount = 0;
     let failCount = 0;
+    const errors = [];
     for (const address of addresses) {
       try {
         await unassignMailbox(username, address);
         successCount++;
       } catch(e) {
         failCount++;
+        errors.push(e?.message || `${address} 取消分配失败`);
       }
     }
     
@@ -482,7 +488,7 @@ async function handleUnassignMailbox() {
     } else if (successCount > 0 && failCount > 0) {
       showToast(`成功 ${successCount} 个，失败 ${failCount} 个`, 'warning');
     } else {
-      showToast('取消分配失败', 'error');
+      showToast(errors[0] || '取消分配失败', 'error');
     }
     
     els.unassignModal?.classList.remove('show');
@@ -494,7 +500,7 @@ async function handleUnassignMailbox() {
       loadUserMailboxes();
     }
   } catch(e) {
-    showToast('取消分配失败', 'error');
+    showToast(e?.message || '取消分配失败', 'error');
   }
 }
 

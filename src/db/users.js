@@ -8,7 +8,16 @@ import {
   invalidateUserQuotaCache,
   invalidateSystemStatCache
 } from '../utils/cache.js';
-import { getOrCreateMailboxId, getMailboxIdByAddress } from './mailboxes.js';
+import { getMailboxIdByAddress } from './mailboxes.js';
+
+const USERNAME_PATTERN = /^[a-z0-9._-]{1,64}$/;
+
+function normalizeUsername(username) {
+  const uname = String(username || '').trim().toLowerCase();
+  if (!uname) throw new Error('用户名不能为空');
+  if (!USERNAME_PATTERN.test(uname)) throw new Error('用户名格式无效');
+  return uname;
+}
 
 /**
  * 创建新用户
@@ -22,8 +31,7 @@ import { getOrCreateMailboxId, getMailboxIdByAddress } from './mailboxes.js';
  * @throws {Error} 当用户名为空时抛出异常
  */
 export async function createUser(db, { username, passwordHash = null, role = 'user', mailboxLimit = 10 }) {
-  const uname = String(username || '').trim().toLowerCase();
-  if (!uname) throw new Error('用户名不能为空');
+  const uname = normalizeUsername(username);
   const r = await db.prepare('INSERT INTO users (username, password_hash, role, mailbox_limit) VALUES (?, ?, ?, ?)')
     .bind(uname, passwordHash, role, Math.max(0, Number(mailboxLimit || 10))).run();
   const res = await db.prepare('SELECT id, username, role, mailbox_limit, created_at FROM users WHERE username = ? LIMIT 1')
@@ -124,6 +132,20 @@ export async function listUsersWithCounts(db, { limit = 50, offset = 0, sort = '
   }));
 }
 
+async function resolveUserId(db, userId, username) {
+  let uid = Number(userId || 0);
+  if (uid > 0) return uid;
+
+  const uname = normalizeUsername(username);
+
+  const row = await db.prepare('SELECT id FROM users WHERE username = ? LIMIT 1')
+    .bind(uname)
+    .first();
+
+  if (!row?.id) throw new Error('用户不存在');
+  return Number(row.id);
+}
+
 /**
  * 分配邮箱给用户
  * @param {object} db - 数据库连接对象
@@ -137,17 +159,18 @@ export async function listUsersWithCounts(db, { limit = 50, offset = 0, sort = '
 export async function assignMailboxToUser(db, { userId = null, username = null, address }) {
   const normalized = String(address || '').trim().toLowerCase();
   if (!normalized) throw new Error('邮箱地址无效');
-  // 查询或创建邮箱
-  const mailboxId = await getOrCreateMailboxId(db, normalized);
+  const mailboxId = await getMailboxIdByAddress(db, normalized);
+  if (!mailboxId) throw new Error('邮箱不存在');
 
   // 获取用户 ID
-  let uid = userId;
-  if (!uid) {
-    const uname = String(username || '').trim().toLowerCase();
-    if (!uname) throw new Error('缺少用户标识');
-    const r = await db.prepare('SELECT id FROM users WHERE username = ? LIMIT 1').bind(uname).all();
-    if (!r.results || !r.results.length) throw new Error('用户不存在');
-    uid = r.results[0].id;
+  const uid = await resolveUserId(db, userId, username);
+
+  const existingBinding = await db.prepare(
+    'SELECT id FROM user_mailboxes WHERE user_id = ? AND mailbox_id = ? LIMIT 1'
+  ).bind(uid, mailboxId).first();
+
+  if (existingBinding?.id) {
+    return { success: true, already_assigned: true };
   }
 
   // 使用缓存校验上限
@@ -184,6 +207,139 @@ export async function getUserMailboxes(db, userId, limit = 100) {
   return results || [];
 }
 
+export async function getMailboxAssignments(db, address) {
+  const normalized = String(address || '').trim().toLowerCase();
+  if (!normalized) throw new Error('邮箱地址无效');
+
+  const mailbox = await db.prepare('SELECT id, address FROM mailboxes WHERE address = ? LIMIT 1')
+    .bind(normalized)
+    .first();
+
+  if (!mailbox?.id) {
+    return {
+      address: normalized,
+      mailbox_id: null,
+      assigned_count: 0,
+      users: []
+    };
+  }
+
+  const { results } = await db.prepare(`
+    SELECT u.id, u.username, u.role, u.can_send, u.mailbox_limit, um.created_at, um.is_pinned
+    FROM user_mailboxes um
+    JOIN users u ON u.id = um.user_id
+    WHERE um.mailbox_id = ?
+    ORDER BY LOWER(u.username) ASC
+  `).bind(mailbox.id).all();
+
+  const users = (results || []).map((row) => ({
+    id: row.id,
+    username: row.username,
+    role: row.role,
+    can_send: row.can_send,
+    mailbox_limit: row.mailbox_limit,
+    created_at: row.created_at,
+    is_pinned: row.is_pinned
+  }));
+
+  return {
+    address: mailbox.address,
+    mailbox_id: mailbox.id,
+    assigned_count: users.length,
+    users
+  };
+}
+
+export async function replaceMailboxAssignments(db, { address, usernames = [] }) {
+  const normalizedAddress = String(address || '').trim().toLowerCase();
+  if (!normalizedAddress) throw new Error('邮箱地址无效');
+
+  const mailboxId = await getMailboxIdByAddress(db, normalizedAddress);
+  if (!mailboxId) throw new Error('邮箱不存在');
+
+  const normalizedUsernames = Array.from(new Set((Array.isArray(usernames) ? usernames : [])
+    .map((username) => normalizeUsername(username))));
+
+  const currentAssignments = await getMailboxAssignments(db, normalizedAddress);
+  const currentUsernames = new Set((currentAssignments.users || []).map((user) => String(user.username || '').toLowerCase()));
+  const currentAssignmentMap = new Map((currentAssignments.users || []).map((user) => [
+    String(user.username || '').toLowerCase(),
+    {
+      created_at: user.created_at,
+      is_pinned: Number(user.is_pinned || 0)
+    }
+  ]));
+
+  if (!normalizedUsernames.length) {
+    await db.prepare('DELETE FROM user_mailboxes WHERE mailbox_id = ?').bind(mailboxId).run();
+    for (const user of currentAssignments.users || []) {
+      invalidateUserQuotaCache(Number(user.id || 0));
+    }
+    return {
+      success: true,
+      address: normalizedAddress,
+      assigned_count: 0,
+      assigned_users: []
+    };
+  }
+
+  const placeholders = normalizedUsernames.map(() => '?').join(',');
+  const { results: matchedUsers } = await db.prepare(
+    `SELECT id, username, mailbox_limit FROM users WHERE username IN (${placeholders})`
+  ).bind(...normalizedUsernames).all();
+
+  const users = matchedUsers || [];
+  if (users.length !== normalizedUsernames.length) {
+    const found = new Set(users.map((user) => String(user.username || '').toLowerCase()));
+    const missing = normalizedUsernames.find((username) => !found.has(username));
+    throw new Error(`用户不存在: ${missing}`);
+  }
+
+  for (const user of users) {
+    const userId = Number(user.id || 0);
+    const quota = await getCachedUserQuota(db, userId);
+    const alreadyOwns = currentUsernames.has(String(user.username || '').toLowerCase());
+    const nextUsed = quota.used + (alreadyOwns ? 0 : 1);
+    if (nextUsed > quota.limit) {
+      throw new Error(`用户 ${user.username} 已达到邮箱上限`);
+    }
+  }
+
+  await db.exec('BEGIN');
+  try {
+    await db.prepare('DELETE FROM user_mailboxes WHERE mailbox_id = ?').bind(mailboxId).run();
+
+    for (const user of users) {
+      const normalizedUsername = String(user.username || '').toLowerCase();
+      const existingMeta = currentAssignmentMap.get(normalizedUsername);
+      await db.prepare(
+        'INSERT INTO user_mailboxes (user_id, mailbox_id, created_at, is_pinned) VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)'
+      )
+        .bind(Number(user.id), mailboxId, existingMeta?.created_at || null, Number(existingMeta?.is_pinned || 0))
+        .run();
+    }
+    await db.exec('COMMIT');
+  } catch (error) {
+    try { await db.exec('ROLLBACK'); } catch (_) { }
+    throw error;
+  }
+
+  const affectedUserIds = new Set([
+    ...(currentAssignments.users || []).map((user) => Number(user.id || 0)),
+    ...users.map((user) => Number(user.id || 0))
+  ]);
+  for (const userId of affectedUserIds) {
+    invalidateUserQuotaCache(userId);
+  }
+
+  return {
+    success: true,
+    address: normalizedAddress,
+    assigned_count: users.length,
+    assigned_users: users.map((user) => String(user.username || '').toLowerCase())
+  };
+}
+
 /**
  * 取消邮箱分配，解除用户与邮箱的绑定关系
  * @param {object} db - 数据库连接对象
@@ -203,14 +359,7 @@ export async function unassignMailboxFromUser(db, { userId = null, username = nu
   if (!mailboxId) throw new Error('邮箱不存在');
 
   // 获取用户ID
-  let uid = userId;
-  if (!uid) {
-    const uname = String(username || '').trim().toLowerCase();
-    if (!uname) throw new Error('缺少用户标识');
-    const r = await db.prepare('SELECT id FROM users WHERE username = ? LIMIT 1').bind(uname).all();
-    if (!r.results || !r.results.length) throw new Error('用户不存在');
-    uid = r.results[0].id;
-  }
+  const uid = await resolveUserId(db, userId, username);
 
   // 检查绑定关系是否存在
   const checkRes = await db.prepare('SELECT id FROM user_mailboxes WHERE user_id = ? AND mailbox_id = ? LIMIT 1')

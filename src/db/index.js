@@ -19,6 +19,8 @@ export {
   deleteUser,
   listUsersWithCounts,
   assignMailboxToUser,
+  getMailboxAssignments,
+  replaceMailboxAssignments,
   getUserMailboxes,
   unassignMailboxFromUser
 } from './users.js';

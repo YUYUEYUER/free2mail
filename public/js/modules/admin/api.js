@@ -38,6 +38,7 @@ export async function getUsers(params = {}) {
   if (params.page) query.set('page', params.page);
   if (params.size) query.set('size', params.size);
   const r = await api(`/api/users?${query.toString()}`);
+  if (!r.ok) throw new Error(await r.text() || '获取用户失败');
   return r.json();
 }
 
@@ -47,11 +48,13 @@ export async function getUsers(params = {}) {
  * @returns {Promise<Response>}
  */
 export async function createUser(data) {
-  return api('/api/users', {
+  const r = await api('/api/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
+  if (!r.ok) throw new Error(await r.text() || '创建用户失败');
+  return r;
 }
 
 /**
@@ -61,11 +64,13 @@ export async function createUser(data) {
  * @returns {Promise<Response>}
  */
 export async function updateUser(id, data) {
-  return api(`/api/users/${id}`, {
+  const r = await api(`/api/users/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
+  if (!r.ok) throw new Error(await r.text() || '更新用户失败');
+  return r;
 }
 
 /**
@@ -74,7 +79,9 @@ export async function updateUser(id, data) {
  * @returns {Promise<Response>}
  */
 export async function deleteUser(id) {
-  return api(`/api/users/${id}`, { method: 'DELETE' });
+  const r = await api(`/api/users/${id}`, { method: 'DELETE' });
+  if (!r.ok) throw new Error(await r.text() || '删除用户失败');
+  return r;
 }
 
 /**
@@ -88,6 +95,13 @@ export async function getUserMailboxes(userId, params = {}) {
   if (params.page) query.set('page', params.page);
   if (params.size) query.set('size', params.size);
   const r = await api(`/api/users/${userId}/mailboxes?${query.toString()}`);
+  if (!r.ok) throw new Error(await r.text() || '获取用户邮箱失败');
+  return r.json();
+}
+
+export async function getMailboxAssignments(address) {
+  const r = await api(`/api/users/by-mailbox?address=${encodeURIComponent(address)}`);
+  if (!r.ok) throw new Error(await r.text() || '获取邮箱归属失败');
   return r.json();
 }
 
@@ -98,11 +112,13 @@ export async function getUserMailboxes(userId, params = {}) {
  * @returns {Promise<Response>}
  */
 export async function assignMailbox(username, address) {
-  return api('/api/users/assign', {
+  const r = await api('/api/users/assign', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, address })
   });
+  if (!r.ok) throw new Error(await r.text() || '分配邮箱失败');
+  return r;
 }
 
 /**
@@ -112,11 +128,13 @@ export async function assignMailbox(username, address) {
  * @returns {Promise<Response>}
  */
 export async function unassignMailbox(username, address) {
-  return api('/api/users/unassign', {
+  const r = await api('/api/users/unassign', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, address })
   });
+  if (!r.ok) throw new Error(await r.text() || '取消分配失败');
+  return r;
 }
 
 export default {
@@ -126,6 +144,7 @@ export default {
   updateUser,
   deleteUser,
   getUserMailboxes,
+  getMailboxAssignments,
   assignMailbox,
   unassignMailbox
 };

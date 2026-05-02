@@ -11,7 +11,7 @@ import {
 } from './helpers.js';
 import { buildMockEmails, buildMockEmailDetail } from './mock.js';
 import { extractEmail } from '../utils/common.js';
-import { getMailboxIdByAddress } from '../db/index.js';
+import { getMailboxIdByAddress, checkMailboxOwnership } from '../db/index.js';
 import { parseEmailBody } from '../email/parser.js';
 
 const LIVE_POLL_INTERVAL_MS = 1200;
@@ -330,6 +330,90 @@ export async function handleEmailsApi(request, db, url, path, options) {
   const EMAIL_LIST_TTL = 8 * 1000;
   const EMAIL_BATCH_TTL = 8 * 1000;
 
+  async function ensureReadableMailbox(address) {
+    const normalized = extractEmail(address).trim().toLowerCase();
+    if (!normalized) {
+      return { error: errorResponse('缺少 mailbox 参数', 400), mailboxId: null, normalized: '' };
+    }
+
+    const mailboxId = await getMailboxIdByAddress(db, normalized);
+    if (!mailboxId) {
+      return { error: null, mailboxId: null, normalized };
+    }
+
+    if (isMailboxOnly) {
+      return { error: null, mailboxId, normalized };
+    }
+
+    const userId = Number(options?.authPayload?.userId || 0);
+    const role = String(options?.authPayload?.role || '');
+    if (userId > 0 && role !== 'admin') {
+      const ownership = await checkMailboxOwnership(db, normalized, userId);
+      if (!ownership.ownedByUser) {
+        return { error: errorResponse('无权访问该邮箱', 403), mailboxId: null, normalized };
+      }
+    }
+
+    return { error: null, mailboxId, normalized };
+  }
+
+  async function ensureReadableMessage(messageId) {
+    if (isMock || isMailboxOnly) return null;
+
+    const userId = Number(options?.authPayload?.userId || 0);
+    const role = String(options?.authPayload?.role || '');
+    if (!userId || role === 'admin') return null;
+
+    const row = await db.prepare('SELECT mailbox_id FROM messages WHERE id = ? LIMIT 1').bind(messageId).first();
+    if (!row?.mailbox_id) return errorResponse('未找到邮件', 404);
+
+    const ownership = await db.prepare(
+      'SELECT id FROM user_mailboxes WHERE user_id = ? AND mailbox_id = ? LIMIT 1'
+    ).bind(userId, Number(row.mailbox_id)).first();
+
+    if (!ownership?.id) {
+      return errorResponse('无权访问此邮件', 403);
+    }
+
+    return null;
+  }
+
+  async function ensureReadableMessages(messageIds) {
+    if (isMock || isMailboxOnly) return null;
+
+    const userId = Number(options?.authPayload?.userId || 0);
+    const role = String(options?.authPayload?.role || '');
+    if (!userId || role === 'admin') return null;
+    if (!Array.isArray(messageIds) || !messageIds.length) return null;
+
+    const placeholders = messageIds.map(() => '?').join(',');
+    const { results } = await db.prepare(
+      `SELECT id, mailbox_id FROM messages WHERE id IN (${placeholders})`
+    ).bind(...messageIds).all();
+
+    const rows = results || [];
+    if (rows.length !== messageIds.length) {
+      return errorResponse('未找到邮件', 404);
+    }
+
+    const mailboxIds = Array.from(new Set(rows.map((row) => Number(row.mailbox_id || 0)).filter((id) => id > 0)));
+    if (!mailboxIds.length) {
+      return errorResponse('未找到邮件', 404);
+    }
+
+    const mailboxPlaceholders = mailboxIds.map(() => '?').join(',');
+    const { results: ownedRows } = await db.prepare(
+      `SELECT mailbox_id FROM user_mailboxes WHERE user_id = ? AND mailbox_id IN (${mailboxPlaceholders})`
+    ).bind(userId, ...mailboxIds).all();
+
+    const ownedMailboxIds = new Set((ownedRows || []).map((row) => Number(row.mailbox_id || 0)));
+    if (mailboxIds.some((mailboxId) => !ownedMailboxIds.has(mailboxId))) {
+      return errorResponse('无权访问部分邮件', 403);
+    }
+
+    return null;
+  }
+
   // 获取邮件列表（支持搜索过滤）
   if (path === '/api/emails' && request.method === 'GET') {
     const mailbox = url.searchParams.get('mailbox');
@@ -346,8 +430,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
         return buildMockEmails(6);
       }
 
-      const normalized = extractEmail(mailbox).trim().toLowerCase();
-      const mailboxId = await getMailboxIdByAddress(db, normalized);
+      const { error, mailboxId, normalized } = await ensureReadableMailbox(mailbox);
+      if (error) return error;
       if (!mailboxId) return [];
 
       const results = await queryEmailList(db, mailboxId, filters, limit, isMailboxOnly);
@@ -382,8 +466,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
     }
 
     try {
-      const normalized = extractEmail(mailbox).trim().toLowerCase();
-      const mailboxId = await getMailboxIdByAddress(db, normalized);
+      const { error, mailboxId } = await ensureReadableMailbox(mailbox);
+      if (error) return error;
       if (!mailboxId) {
         return jsonResponseWithHeaders({ changed: false, latestId: 0, latestReceivedAt: null, timeout: true }, 200, { 'Cache-Control': 'no-store' });
       }
@@ -460,8 +544,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
     }
 
     try {
-      const normalized = extractEmail(mailbox).trim().toLowerCase();
-      const mailboxId = await getMailboxIdByAddress(db, normalized);
+      const { error, mailboxId } = await ensureReadableMailbox(mailbox);
+      if (error) return error;
       if (!mailboxId) {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
@@ -587,8 +671,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
     }
 
     try {
-      const normalized = extractEmail(mailbox).trim().toLowerCase();
-      const mailboxId = await getMailboxIdByAddress(db, normalized);
+      const { error, mailboxId } = await ensureReadableMailbox(mailbox);
+      if (error) return error;
       if (!mailboxId) {
         return jsonResponseWithHeaders([], 200, { 'Cache-Control': 'no-store' });
       }
@@ -617,6 +701,9 @@ export async function handleEmailsApi(request, db, url, path, options) {
         return ids.map((id) => buildMockEmailDetail(id));
       }
 
+      const authError = await ensureReadableMessages(ids);
+      if (authError) return authError;
+
       let timeFilter = '';
       let timeParam = [];
       if (isMailboxOnly) {
@@ -644,8 +731,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
       return errorResponse('缺少 mailbox 参数', 400);
     }
     try {
-      const normalized = extractEmail(mailbox).trim().toLowerCase();
-      const mailboxId = await getMailboxIdByAddress(db, normalized);
+      const { error, mailboxId } = await ensureReadableMailbox(mailbox);
+      if (error) return error;
       if (!mailboxId) {
         return Response.json({ success: true, deletedCount: 0 });
       }
@@ -665,6 +752,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
   if (request.method === 'GET' && path.startsWith('/api/email/') && path.endsWith('/download')) {
     if (options.mockOnly) return errorResponse('演示模式不可下载', 403);
     const id = path.split('/')[3];
+    const authError = await ensureReadableMessage(id);
+    if (authError) return authError;
     const { results } = await db.prepare('SELECT r2_bucket, r2_object_key FROM messages WHERE id = ?').bind(id).all();
     const row = (results || [])[0];
     if (!row || !row.r2_object_key) return errorResponse('未找到对象', 404);
@@ -683,6 +772,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
   // 查看原始 EML
   if (request.method === 'GET' && path.startsWith('/api/email/') && path.endsWith('/raw')) {
     const emailId = path.split('/')[3];
+    const authError = await ensureReadableMessage(emailId);
+    if (authError) return authError;
 
     if (isMock) {
       const detail = buildMockEmailDetail(emailId);
@@ -715,6 +806,8 @@ export async function handleEmailsApi(request, db, url, path, options) {
   // 获取单封邮件详情
   if (request.method === 'GET' && path.startsWith('/api/email/')) {
     const emailId = path.split('/')[3];
+    const authError = await ensureReadableMessage(emailId);
+    if (authError) return authError;
     if (isMock) {
       const detail = buildMockEmailDetail(emailId);
       return Response.json({
@@ -797,6 +890,9 @@ export async function handleEmailsApi(request, db, url, path, options) {
       return errorResponse('无效的邮件ID', 400);
     }
 
+    const authError = await ensureReadableMessage(emailId);
+    if (authError) return authError;
+
     try {
       const result = await db.prepare('UPDATE messages SET is_read = 1 WHERE id = ?').bind(emailId).run();
       const updated = (result?.meta?.changes || 0) > 0;
@@ -820,6 +916,9 @@ export async function handleEmailsApi(request, db, url, path, options) {
     if (!emailId || !Number.isInteger(parseInt(emailId, 10))) {
       return errorResponse('无效的邮件ID', 400);
     }
+
+    const authError = await ensureReadableMessage(emailId);
+    if (authError) return authError;
 
     try {
       const result = await db.prepare('DELETE FROM messages WHERE id = ?').bind(emailId).run();

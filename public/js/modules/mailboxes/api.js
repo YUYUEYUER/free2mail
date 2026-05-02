@@ -53,7 +53,33 @@ export async function loadMailboxes(params = {}) {
  */
 export async function loadDomains() {
   const r = await api('/api/domains');
+   if (!r.ok) throw new Error(await r.text() || '加载域名失败');
   return r.json();
+}
+
+export async function getUsers(params = {}) {
+  const query = new URLSearchParams();
+  if (params.page) query.set('page', params.page);
+  if (params.size) query.set('size', params.size);
+  const r = await api(`/api/users?${query.toString()}`);
+  if (!r.ok) throw new Error(await r.text() || '加载用户失败');
+  return r.json();
+}
+
+export async function getMailboxAssignments(address) {
+  const r = await api(`/api/users/by-mailbox?address=${encodeURIComponent(address)}`);
+  if (!r.ok) throw new Error(await r.text() || '加载邮箱归属失败');
+  return r.json();
+}
+
+export async function replaceMailboxAssignments(address, usernames) {
+  const r = await api('/api/users/replace-assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address, usernames })
+  });
+  if (!r.ok) throw new Error(await r.text() || '更新邮箱归属失败');
+  return r.json().catch(() => ({ success: true }));
 }
 
 /**
@@ -150,6 +176,9 @@ export default {
   api,
   loadMailboxes,
   loadDomains,
+  getUsers,
+  getMailboxAssignments,
+  replaceMailboxAssignments,
   deleteMailbox,
   resetPassword,
   changePassword,

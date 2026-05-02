@@ -7,10 +7,70 @@
 export const MOCK_STATE = {
   domains: ['example.com'],
   mailboxes: [],
+  users: [],
+  userMailboxes: new Map(),
+  nextUserId: 10,
+  seededUserAssignments: false,
   emailsByMailbox: new Map(),
   sentEmailsById: new Map(),
   nextMailboxId: 100
 };
+
+const MOCK_USERNAME_PATTERN = /^[a-z0-9._-]{1,64}$/;
+
+function normalizeMockUsername(username) {
+  const normalized = String(username || '').trim().toLowerCase();
+  if (!normalized) throw new Error('用户名不能为空');
+  if (!MOCK_USERNAME_PATTERN.test(normalized)) throw new Error('用户名格式无效');
+  return normalized;
+}
+
+function ensureMockUsers() {
+  if (MOCK_STATE.users.length) return;
+  MOCK_STATE.users = [
+    { id: 1, username: 'demo1', role: 'user', can_send: 0, mailbox_limit: 5, created_at: formatMockTimestamp(24 * 3) },
+    { id: 2, username: 'demo2', role: 'user', can_send: 0, mailbox_limit: 8, created_at: formatMockTimestamp(24 * 2) },
+    { id: 3, username: 'operator', role: 'admin', can_send: 1, mailbox_limit: 20, created_at: formatMockTimestamp(24) }
+  ];
+  MOCK_STATE.nextUserId = 4;
+  for (const user of MOCK_STATE.users) {
+    MOCK_STATE.userMailboxes.set(user.id, []);
+  }
+}
+
+function ensureMockMailboxes() {
+  if (!MOCK_STATE.mailboxes.length) {
+    MOCK_STATE.mailboxes = buildMockMailboxes(6, 2, MOCK_STATE.domains);
+  }
+  ensureMockUsers();
+  if (!MOCK_STATE.seededUserAssignments) {
+    MOCK_STATE.userMailboxes.set(1, [MOCK_STATE.mailboxes[0], MOCK_STATE.mailboxes[1]].filter(Boolean));
+    MOCK_STATE.userMailboxes.set(2, [MOCK_STATE.mailboxes[2]].filter(Boolean));
+    MOCK_STATE.userMailboxes.set(3, [MOCK_STATE.mailboxes[3], MOCK_STATE.mailboxes[4]].filter(Boolean));
+    MOCK_STATE.seededUserAssignments = true;
+  }
+}
+
+function normalizeMockMailboxOwners(mailbox) {
+  const assignedUsers = [];
+  for (const user of MOCK_STATE.users) {
+    const list = MOCK_STATE.userMailboxes.get(user.id) || [];
+    if (list.some((item) => item.address === mailbox.address)) {
+      assignedUsers.push(user.username);
+    }
+  }
+  return {
+    ...mailbox,
+    assigned_count: assignedUsers.length,
+    assigned_users: assignedUsers
+  };
+}
+
+function findMockUser(username) {
+  ensureMockUsers();
+  const normalized = String(username || '').trim().toLowerCase();
+  return MOCK_STATE.users.find((user) => user.username === normalized) || null;
+}
 
 const DEMO_EMAIL_LIBRARY = [
   {
@@ -491,10 +551,10 @@ export async function mockApi(path, options = {}) {
   if (url.pathname === '/api/mailboxes' && (!options.method || options.method === 'GET')) {
     // 初始化 mock 邮箱
     if (!MOCK_STATE.mailboxes.length) {
-      MOCK_STATE.mailboxes = buildMockMailboxes(6, 2, MOCK_STATE.domains);
+      ensureMockMailboxes();
     }
     
-    let result = [...MOCK_STATE.mailboxes];
+    let result = [...MOCK_STATE.mailboxes].map(normalizeMockMailboxOwners);
     
     // 搜索过滤
     const q = url.searchParams.get('q');
@@ -548,6 +608,162 @@ export async function mockApi(path, options = {}) {
     const pageResult = result.slice(start, start + size);
     
     return new Response(JSON.stringify({ list: pageResult, total }), { headers: jsonHeaders });
+  }
+
+  // GET /api/users
+  if (url.pathname === '/api/users' && (!options.method || options.method === 'GET')) {
+    ensureMockMailboxes();
+    const page = Math.max(Number(url.searchParams.get('page') || 1), 1);
+    const size = Math.max(1, Math.min(Number(url.searchParams.get('size') || 50), 100));
+    const start = (page - 1) * size;
+    const list = MOCK_STATE.users.map((user) => ({
+      ...user,
+      mailbox_count: (MOCK_STATE.userMailboxes.get(user.id) || []).length
+    }));
+    return new Response(JSON.stringify({ list: list.slice(start, start + size), total: list.length }), { headers: jsonHeaders });
+  }
+
+  // GET /api/users/:id/mailboxes
+  if (/^\/api\/users\/\d+\/mailboxes$/.test(url.pathname) && (!options.method || options.method === 'GET')) {
+    ensureMockMailboxes();
+    const userId = Number(url.pathname.split('/')[3]);
+    const page = Math.max(Number(url.searchParams.get('page') || 1), 1);
+    const size = Math.max(1, Math.min(Number(url.searchParams.get('size') || 20), 200));
+    const boxes = (MOCK_STATE.userMailboxes.get(userId) || []).map(normalizeMockMailboxOwners);
+    const start = (page - 1) * size;
+    return new Response(JSON.stringify({ list: boxes.slice(start, start + size), total: boxes.length }), { headers: jsonHeaders });
+  }
+
+  // GET /api/users/by-mailbox
+  if (url.pathname === '/api/users/by-mailbox' && (!options.method || options.method === 'GET')) {
+    ensureMockMailboxes();
+    const address = String(url.searchParams.get('address') || '').trim().toLowerCase();
+    const users = MOCK_STATE.users.filter((user) => {
+      const boxes = MOCK_STATE.userMailboxes.get(user.id) || [];
+      return boxes.some((item) => item.address === address);
+    });
+    return new Response(JSON.stringify({
+      address,
+      mailbox_id: MOCK_STATE.mailboxes.find((item) => item.address === address)?.id || null,
+      assigned_count: users.length,
+      users
+    }), { headers: jsonHeaders });
+  }
+
+  // POST /api/users/assign
+  if (url.pathname === '/api/users/assign' && options.method === 'POST') {
+    ensureMockMailboxes();
+    try {
+      const body = typeof options.body === 'string' ? JSON.parse(options.body || '{}') : (options.body || {});
+      const username = normalizeMockUsername(body.username);
+      const address = String(body.address || '').trim().toLowerCase();
+      const user = findMockUser(username);
+      if (!user) return new Response('用户不存在', { status: 404 });
+      const mailbox = MOCK_STATE.mailboxes.find((item) => item.address === address);
+      if (!mailbox) return new Response('邮箱不存在', { status: 404 });
+      const list = MOCK_STATE.userMailboxes.get(user.id) || [];
+      if (list.some((item) => item.address === address)) {
+        return new Response(JSON.stringify({ success: true, already_assigned: true }), { headers: jsonHeaders });
+      }
+      if (list.length >= Number(user.mailbox_limit || 0)) {
+        return new Response('已达到邮箱上限', { status: 400 });
+      }
+      list.unshift(mailbox);
+      MOCK_STATE.userMailboxes.set(user.id, list);
+      return new Response(JSON.stringify({ success: true }), { headers: jsonHeaders });
+    } catch (_) {
+      return new Response('Bad Request', { status: 400 });
+    }
+  }
+
+  // POST /api/users/replace-assignments
+  if (url.pathname === '/api/users/replace-assignments' && options.method === 'POST') {
+    ensureMockMailboxes();
+    try {
+      const body = typeof options.body === 'string' ? JSON.parse(options.body || '{}') : (options.body || {});
+      const address = String(body.address || '').trim().toLowerCase();
+      const usernames = Array.isArray(body.usernames) ? body.usernames.map((item) => normalizeMockUsername(item)) : [];
+      const mailbox = MOCK_STATE.mailboxes.find((item) => item.address === address);
+      if (!mailbox) return new Response('邮箱不存在', { status: 404 });
+
+      const uniqueUsernames = Array.from(new Set(usernames));
+      const targetUsers = uniqueUsernames.map((username) => {
+        const user = findMockUser(username);
+        if (!user) throw new Error(`用户不存在: ${username}`);
+        return user;
+      });
+
+      for (const user of targetUsers) {
+        const boxes = MOCK_STATE.userMailboxes.get(user.id) || [];
+        const alreadyOwns = boxes.some((item) => item.address === address);
+        const nextUsed = boxes.length + (alreadyOwns ? 0 : 1);
+        if (nextUsed > Number(user.mailbox_limit || 0)) {
+          return new Response(`用户 ${user.username} 已达到邮箱上限`, { status: 400 });
+        }
+      }
+
+      for (const user of MOCK_STATE.users) {
+        const boxes = MOCK_STATE.userMailboxes.get(user.id) || [];
+        MOCK_STATE.userMailboxes.set(user.id, boxes.filter((item) => item.address !== address));
+      }
+
+      for (const user of targetUsers) {
+        const boxes = MOCK_STATE.userMailboxes.get(user.id) || [];
+        boxes.unshift(mailbox);
+        MOCK_STATE.userMailboxes.set(user.id, boxes);
+      }
+
+      return new Response(JSON.stringify({ success: true, address, assigned_count: targetUsers.length, assigned_users: targetUsers.map((user) => user.username) }), { headers: jsonHeaders });
+    } catch (error) {
+      return new Response(error?.message || 'Bad Request', { status: 400 });
+    }
+  }
+
+  // POST /api/users
+  if (url.pathname === '/api/users' && options.method === 'POST') {
+    ensureMockMailboxes();
+    try {
+      const body = typeof options.body === 'string' ? JSON.parse(options.body || '{}') : (options.body || {});
+      const username = normalizeMockUsername(body.username);
+      if (MOCK_STATE.users.some((user) => user.username === username)) {
+        return new Response('用户名已存在', { status: 400 });
+      }
+      const role = body.role === 'admin' ? 'admin' : 'user';
+      const mailboxLimit = Math.max(0, Number(body.mailboxLimit || 10));
+      const user = {
+        id: MOCK_STATE.nextUserId++,
+        username,
+        role,
+        can_send: 0,
+        mailbox_limit: mailboxLimit,
+        created_at: new Date().toISOString().replace('T', ' ').slice(0, 19)
+      };
+      MOCK_STATE.users.unshift(user);
+      MOCK_STATE.userMailboxes.set(user.id, []);
+      return new Response(JSON.stringify(user), { headers: jsonHeaders });
+    } catch (error) {
+      return new Response(error?.message || 'Bad Request', { status: 400 });
+    }
+  }
+
+  // POST /api/users/unassign
+  if (url.pathname === '/api/users/unassign' && options.method === 'POST') {
+    ensureMockMailboxes();
+    try {
+      const body = typeof options.body === 'string' ? JSON.parse(options.body || '{}') : (options.body || {});
+      const username = normalizeMockUsername(body.username);
+      const address = String(body.address || '').trim().toLowerCase();
+      const user = findMockUser(username);
+      if (!user) return new Response('用户不存在', { status: 404 });
+      const list = MOCK_STATE.userMailboxes.get(user.id) || [];
+      const index = list.findIndex((item) => item.address === address);
+      if (index === -1) return new Response('该邮箱未分配给该用户', { status: 400 });
+      list.splice(index, 1);
+      MOCK_STATE.userMailboxes.set(user.id, list);
+      return new Response(JSON.stringify({ success: true }), { headers: jsonHeaders });
+    } catch (_) {
+      return new Response('Bad Request', { status: 400 });
+    }
   }
 
   // POST /api/mailboxes/pin

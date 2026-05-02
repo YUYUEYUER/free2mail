@@ -11,7 +11,8 @@ import {
   getOrCreateMailboxId,
   toggleMailboxPin,
   getTotalMailboxCount,
-  assignMailboxToUser
+  assignMailboxToUser,
+  checkMailboxOwnership
 } from '../db/index.js';
 import { handleMailboxAdminApi } from './mailboxAdmin.js';
 
@@ -27,6 +28,41 @@ import { handleMailboxAdminApi } from './mailboxAdmin.js';
  */
 export async function handleMailboxesApi(request, db, mailDomains, url, path, options) {
   const isMock = !!options.mockOnly;
+
+  async function enrichAssignedUsers(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return list;
+
+    const mailboxIds = list.map((row) => Number(row.id || 0)).filter((id) => id > 0);
+    if (!mailboxIds.length) {
+      return list.map((row) => ({ ...row, assigned_count: 0, assigned_users: [] }));
+    }
+
+    const placeholders = mailboxIds.map(() => '?').join(',');
+    const { results: ownerRows } = await db.prepare(`
+      SELECT um.mailbox_id, u.username
+      FROM user_mailboxes um
+      JOIN users u ON u.id = um.user_id
+      WHERE um.mailbox_id IN (${placeholders})
+      ORDER BY LOWER(u.username) ASC
+    `).bind(...mailboxIds).all();
+
+    const ownerMap = new Map();
+    for (const row of (ownerRows || [])) {
+      const mailboxId = Number(row.mailbox_id || 0);
+      if (!ownerMap.has(mailboxId)) ownerMap.set(mailboxId, []);
+      ownerMap.get(mailboxId).push(String(row.username || '').toLowerCase());
+    }
+
+    return list.map((row) => {
+      const assignedUsers = ownerMap.get(Number(row.id || 0)) || [];
+      return {
+        ...row,
+        assigned_count: assignedUsers.length,
+        assigned_users: assignedUsers
+      };
+    });
+  }
 
   const DOMAIN_TTL = 10 * 60 * 1000;
   const MAILBOX_INFO_TTL = 20 * 1000;
@@ -57,6 +93,11 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       try {
         const payload = getJwtPayload(request, options);
         if (payload?.userId) {
+          const ownership = await checkMailboxOwnership(db, email, payload.userId);
+          if (ownership.exists && !ownership.ownedByUser) {
+            return errorResponse('生成的邮箱地址已被占用，请重试', 409);
+          }
+          await getOrCreateMailboxId(db, email);
           await assignMailboxToUser(db, { userId: payload.userId, address: email });
           bumpApiCacheVersion('mailboxes', 'mailboxInfo', 'quota', 'userMailboxes', 'users');
           return Response.json({ email, expires: Date.now() + 3600000 });
@@ -101,6 +142,11 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         const payload = getJwtPayload(request, options);
         const userId = payload?.userId;
         if (userId) {
+          const ownership = await checkMailboxOwnership(db, email, userId);
+          if (ownership.exists && !ownership.ownedByUser) {
+            return errorResponse('邮箱地址已存在', 409);
+          }
+          await getOrCreateMailboxId(db, email);
           await assignMailboxToUser(db, { userId, address: email });
         } else {
           await getOrCreateMailboxId(db, email);
@@ -330,13 +376,16 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
                  CASE WHEN (m.password_hash IS NULL OR m.password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(m.can_login, 0) AS can_login,
                  m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite
-          FROM mailboxes m
-          LEFT JOIN user_mailboxes um ON m.id = um.mailbox_id AND um.user_id = ?
-          ${whereClause}
-          ORDER BY COALESCE(um.is_pinned, 0) DESC, m.created_at DESC
-          LIMIT ? OFFSET ?
+           FROM mailboxes m
+           LEFT JOIN user_mailboxes um ON m.id = um.mailbox_id AND um.user_id = ?
+           ${whereClause}
+           ORDER BY COALESCE(um.is_pinned, 0) DESC, m.created_at DESC
+           LIMIT ? OFFSET ?
         `).bind(...adminBindParams).all();
-        return { list: results || [], total };
+        return {
+          list: await enrichAssignedUsers(results || []),
+          total
+        };
       }
 
       if (strictAdmin) {
@@ -352,12 +401,15 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
                  CASE WHEN (m.password_hash IS NULL OR m.password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(m.can_login, 0) AS can_login,
                  m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite
-          FROM mailboxes m
-          ${whereClause}
-          ORDER BY m.created_at DESC
-          LIMIT ? OFFSET ?
+           FROM mailboxes m
+           ${whereClause}
+           ORDER BY m.created_at DESC
+           LIMIT ? OFFSET ?
         `).bind(...bindParams).all();
-        return { list: results || [], total };
+        return {
+          list: await enrichAssignedUsers(results || []),
+          total
+        };
       }
 
       const countResult = await db.prepare(`

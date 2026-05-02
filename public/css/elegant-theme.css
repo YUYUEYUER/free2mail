@@ -1422,6 +1422,22 @@ body::after {
   font-size: 11px;
 }
 
+.page-mailboxes .mailbox-owner-summary,
+.page-mailboxes .item-owner-summary {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ui-text-muted);
+}
+
+.page-mailboxes .owner-indicator,
+.page-mailboxes .indicator.owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(53, 102, 238, 0.08);
+  color: var(--ui-accent);
+}
+
 .page-mailboxes .card-actions {
   margin-top: auto;
   display: grid;

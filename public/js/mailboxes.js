@@ -5,7 +5,7 @@
 
 import { getCurrentUserKey } from './storage.js';
 import { openForwardDialog, toggleFavorite, batchSetFavorite, injectDialogStyles } from './mailbox-settings.js';
-import { api, loadMailboxes as fetchMailboxes, loadDomains as fetchDomains, deleteMailbox as apiDeleteMailbox, toggleLogin as apiToggleLogin, batchToggleLogin, resetPassword as apiResetPassword, changePassword as apiChangePassword } from './modules/mailboxes/api.js';
+import { api, loadMailboxes as fetchMailboxes, loadDomains as fetchDomains, getUsers as fetchUsers, getMailboxAssignments, replaceMailboxAssignments, deleteMailbox as apiDeleteMailbox, toggleLogin as apiToggleLogin, batchToggleLogin, resetPassword as apiResetPassword, changePassword as apiChangePassword } from './modules/mailboxes/api.js';
 import { formatTime, escapeHtml, generateSkeleton, renderGrid, renderList, renderOverviewEmptyState } from './modules/mailboxes/render.js';
 import { setIcon } from './core/icons.js';
 
@@ -60,7 +60,21 @@ const els = {
   passwordNewInput: document.getElementById('password-new-input'),
   passwordShowToggle: document.getElementById('password-show-toggle'),
   passwordModalCancel: document.getElementById('password-modal-cancel'),
-  passwordModalConfirm: document.getElementById('password-modal-confirm')
+  passwordModalConfirm: document.getElementById('password-modal-confirm'),
+  assignUserSubpage: document.getElementById('assign-user-subpage'),
+  assignSubpageClose: document.getElementById('assign-subpage-close'),
+  assignSubpageCancel: document.getElementById('assign-subpage-cancel'),
+  assignSubpageConfirm: document.getElementById('assign-subpage-confirm'),
+  assignSubpageEmail: document.getElementById('assign-subpage-email'),
+  usersLoading: document.getElementById('users-loading'),
+  usersList: document.getElementById('users-list'),
+  usersEmpty: document.getElementById('users-empty'),
+  userSearchInput: document.getElementById('user-search-input'),
+  selectAllUsers: document.getElementById('select-all-users'),
+  clearAllUsers: document.getElementById('clear-all-users'),
+  selectedUsersSection: document.getElementById('selected-users-section'),
+  selectedUsersList: document.getElementById('selected-users-list'),
+  selectedCount: document.getElementById('selected-count')
 };
 
 // 状态
@@ -69,6 +83,11 @@ const preferredDefaultView = window.matchMedia?.('(max-width: 900px)').matches ?
 let currentView = localStorage.getItem('mf:mailboxes:view') || preferredDefaultView;
 let searchTimeout = null, isLoading = false;
 let availableDomains = [];
+let assignableUsers = [];
+let assignFilteredUsers = [];
+let selectedAssignUsers = new Set();
+let currentAssignMailbox = null;
+let assignSubpageReady = false;
 const SEARCH_DEBOUNCE_MS = (() => {
   try {
     const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
@@ -89,6 +108,195 @@ function renderEmptyState() {
     favorite: els.favoriteFilter?.value,
     forward: els.forwardFilter?.value
   });
+}
+
+function getSessionSummary() {
+  return fetch('/api/session', { headers: { 'Cache-Control': 'no-cache' } })
+    .then((res) => res.ok ? res.json() : null)
+    .catch(() => null);
+}
+
+function isStrictAdminSession(session) {
+  return Boolean(session?.strictAdmin);
+}
+
+function renderAssignUsers() {
+  if (!els.usersList) return;
+
+  if (!assignFilteredUsers.length) {
+    els.usersList.style.display = 'none';
+    if (els.usersEmpty) els.usersEmpty.style.display = 'block';
+    return;
+  }
+
+  if (els.usersEmpty) els.usersEmpty.style.display = 'none';
+  els.usersList.style.display = 'block';
+  els.usersList.innerHTML = assignFilteredUsers.map((user) => {
+    const checked = selectedAssignUsers.has(user.username);
+    const quotaText = `${Number(user.mailbox_count || 0)} / ${Number(user.mailbox_limit || 0)}`;
+    return `
+      <label class="user-item ${checked ? 'selected' : ''}" data-username="${escapeHtml(user.username)}">
+        <input class="user-checkbox" type="checkbox" ${checked ? 'checked' : ''} />
+        <div class="user-info">
+          <div class="user-name">${escapeHtml(user.username)}</div>
+          <div class="user-details">${escapeHtml(user.role === 'admin' ? '管理员' : '普通用户')} · 邮箱 ${escapeHtml(quotaText)}</div>
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  els.usersList.querySelectorAll('.user-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const username = item.dataset.username;
+      if (!username) return;
+      if (selectedAssignUsers.has(username)) {
+        selectedAssignUsers.delete(username);
+      } else {
+        selectedAssignUsers.add(username);
+      }
+      updateSelectedUsers();
+      renderAssignUsers();
+    });
+  });
+}
+
+function updateSelectedUsers() {
+  const selected = assignableUsers.filter((user) => selectedAssignUsers.has(user.username));
+  if (els.selectedCount) els.selectedCount.textContent = String(selected.length);
+  if (els.assignSubpageConfirm) els.assignSubpageConfirm.disabled = !currentAssignMailbox || !assignSubpageReady;
+
+  if (!els.selectedUsersSection || !els.selectedUsersList) return;
+  if (!selected.length) {
+    els.selectedUsersSection.style.display = 'none';
+    els.selectedUsersList.innerHTML = '';
+    return;
+  }
+
+  els.selectedUsersSection.style.display = 'block';
+  els.selectedUsersList.innerHTML = selected.map((user) => `
+    <div class="selected-user-tag">
+      <span>${escapeHtml(user.username)}</span>
+      <button class="remove-btn" type="button" data-remove-username="${escapeHtml(user.username)}">✕</button>
+    </div>
+  `).join('');
+
+  els.selectedUsersList.querySelectorAll('[data-remove-username]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const username = btn.getAttribute('data-remove-username');
+      if (!username) return;
+      selectedAssignUsers.delete(username);
+      updateSelectedUsers();
+      renderAssignUsers();
+    });
+  });
+}
+
+function filterAssignUsers() {
+  const keyword = String(els.userSearchInput?.value || '').trim().toLowerCase();
+  assignFilteredUsers = !keyword
+    ? [...assignableUsers]
+    : assignableUsers.filter((user) => String(user.username || '').toLowerCase().includes(keyword));
+  renderAssignUsers();
+}
+
+async function fetchAllAssignableUsers() {
+  const pageSize = 100;
+  let currentPage = 1;
+  let total = Infinity;
+  const users = [];
+
+  while ((currentPage - 1) * pageSize < total) {
+    const payload = await fetchUsers({ page: currentPage, size: pageSize });
+    const list = Array.isArray(payload) ? payload : (payload.list || []);
+    users.push(...list);
+
+    if (Array.isArray(payload)) {
+      break;
+    }
+
+    total = Number(payload.total || list.length);
+    if (!list.length) break;
+    currentPage += 1;
+  }
+
+  return users;
+}
+
+async function openAssignSubpage(address) {
+  const mailbox = currentData.find((item) => item.address === address);
+  if (!mailbox) return;
+
+  currentAssignMailbox = mailbox;
+  selectedAssignUsers = new Set();
+  assignSubpageReady = false;
+  if (els.assignSubpageEmail) els.assignSubpageEmail.textContent = address;
+  if (els.userSearchInput) els.userSearchInput.value = '';
+  if (els.usersLoading) els.usersLoading.style.display = 'flex';
+  if (els.usersList) els.usersList.style.display = 'none';
+  if (els.usersEmpty) els.usersEmpty.style.display = 'none';
+  if (els.assignUserSubpage) els.assignUserSubpage.style.display = 'flex';
+
+  try {
+    const [usersPayload, assignmentPayload] = await Promise.all([
+      fetchAllAssignableUsers(),
+      getMailboxAssignments(address)
+    ]);
+    assignableUsers = usersPayload.map((user) => ({ ...user, username: String(user.username || '').toLowerCase() }));
+    for (const user of (assignmentPayload?.users || [])) {
+      if (user?.username) selectedAssignUsers.add(String(user.username).toLowerCase());
+    }
+    assignSubpageReady = true;
+    assignFilteredUsers = [...assignableUsers];
+    filterAssignUsers();
+    updateSelectedUsers();
+  } catch (error) {
+    showToast(error.message || '加载用户失败', 'error');
+    assignableUsers = [];
+    assignFilteredUsers = [];
+    filterAssignUsers();
+    updateSelectedUsers();
+  } finally {
+    if (els.usersLoading) els.usersLoading.style.display = 'none';
+  }
+}
+
+function closeAssignSubpage() {
+  currentAssignMailbox = null;
+  assignableUsers = [];
+  assignFilteredUsers = [];
+  selectedAssignUsers = new Set();
+  assignSubpageReady = false;
+  if (els.assignUserSubpage) els.assignUserSubpage.style.display = 'none';
+  if (els.usersList) els.usersList.innerHTML = '';
+  if (els.selectedUsersList) els.selectedUsersList.innerHTML = '';
+  if (els.selectedUsersSection) els.selectedUsersSection.style.display = 'none';
+  if (els.usersEmpty) els.usersEmpty.style.display = 'none';
+  if (els.assignSubpageConfirm) els.assignSubpageConfirm.disabled = true;
+}
+
+async function confirmAssignUsers() {
+  if (!currentAssignMailbox || !assignSubpageReady) return;
+
+  const btnText = els.assignSubpageConfirm?.querySelector('.btn-text');
+  const btnLoading = els.assignSubpageConfirm?.querySelector('.btn-loading');
+  if (btnText) btnText.style.display = 'none';
+  if (btnLoading) btnLoading.style.display = 'inline';
+  if (els.assignSubpageConfirm) els.assignSubpageConfirm.disabled = true;
+
+  try {
+    await replaceMailboxAssignments(currentAssignMailbox.address, Array.from(selectedAssignUsers));
+
+    showToast('邮箱归属已更新', 'success');
+    closeAssignSubpage();
+    await load();
+  } catch (error) {
+    showToast(error.message || '更新分配失败', 'error');
+    if (els.assignSubpageConfirm) els.assignSubpageConfirm.disabled = false;
+  } finally {
+    if (btnText) btnText.style.display = 'inline';
+    if (btnLoading) btnLoading.style.display = 'none';
+  }
 }
 
 // 加载邮箱列表
@@ -198,6 +406,18 @@ function bindCardEvents() {
         case 'forward':
           const m = currentData.find(x => x.address === address);
           if (m && m.id) openForwardDialog(m.id, m.address, m.forward_to);
+          break;
+        case 'assign':
+          try {
+            const session = await getSessionSummary();
+            if (!isStrictAdminSession(session)) {
+              showToast('只有严格管理员可以指定邮箱归属', 'warning');
+              return;
+            }
+            await openAssignSubpage(address);
+          } catch (error) {
+            showToast(error.message || '无法打开分配面板', 'error');
+          }
           break;
         case 'favorite':
           const mb = currentData.find(x => x.address === address);
@@ -500,6 +720,26 @@ els.passwordNewInput?.addEventListener('keydown', (e) => {
     e.preventDefault();
     executePasswordAction();
   }
+});
+
+els.assignSubpageClose?.addEventListener('click', closeAssignSubpage);
+els.assignSubpageCancel?.addEventListener('click', closeAssignSubpage);
+els.assignSubpageConfirm?.addEventListener('click', confirmAssignUsers);
+els.assignUserSubpage?.addEventListener('click', (event) => {
+  if (event.target === els.assignUserSubpage || event.target?.classList?.contains('subpage-overlay')) {
+    closeAssignSubpage();
+  }
+});
+els.userSearchInput?.addEventListener('input', filterAssignUsers);
+els.selectAllUsers?.addEventListener('click', () => {
+  assignFilteredUsers.forEach((user) => selectedAssignUsers.add(user.username));
+  updateSelectedUsers();
+  renderAssignUsers();
+});
+els.clearAllUsers?.addEventListener('click', () => {
+  selectedAssignUsers.clear();
+  updateSelectedUsers();
+  renderAssignUsers();
 });
 
 // 初始化 guest 模式
