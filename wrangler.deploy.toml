@@ -9,7 +9,7 @@ database_name = "maill_free_db"
 database_id = "a908cb9d-c1cd-46de-aab4-173af01924b2"
 
 [vars]
-MAIL_DOMAIN = "tpunovera.buzz, lyapunov.one"
+MAIL_DOMAIN = "tpunovera.buzz, lyapunov.one, noether-core.monster, naviscompute.buzz, deepdive.christmas"
 ADMIN_NAME = "admin"
 
 [assets]
